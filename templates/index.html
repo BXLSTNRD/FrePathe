@@ -1,0 +1,398 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Fré Pathé VIDEO TOOLS 1.6.5</title>
+<link rel="stylesheet" href="/static/style.css"></head>
+<body>
+
+<!-- v1.6.3: Simplified status bar - progress bar removed -->
+<div id="status" class="statusbar">
+</div>
+
+<header class="header">
+  <div class="logo-wrap">
+    <img src="/static/logo.png" alt="Fré Pathé" class="logo-img"/>
+    <span class="version">v1.6.5</span>
+  </div>
+</header>
+
+<!-- Pipeline with cost on right -->
+<div class="pipeline-nav">
+  <div class="pipeline-steps">
+    <div class="pipeline-step" data-step="1">PROJECT</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step" data-step="2">AUDIO DNA</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step" data-step="3">CAST MATRIX</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step" data-step="4">STORYBOARD</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step" data-step="5">PREVIEW</div>
+    <div class="pipeline-arrow dim">→</div>
+    <div class="pipeline-step dim" data-step="6">ANIMATE</div>
+    <div class="pipeline-arrow dim">→</div>
+    <div class="pipeline-step dim" data-step="7">MONTAGE</div>
+    <div class="pipeline-arrow dim">→</div>
+    <div class="pipeline-step dim" data-step="8">VIDEO</div>
+  </div>
+  <div class="pipeline-right">
+    <span id="statusLabel" class="status-text">Ready</span>
+    <span id="costValue" class="cost-value" title="Click for cost breakdown" onclick="showCostBreakdown()" style="cursor: pointer;">$0.00</span>
+  </div>
+</div>
+
+<!-- PROJECT -->
+<div class="card" id="section-project">
+<h2>PROJECT <span id="projectStatus" class="module-status"></span></h2>
+<div class="module-content">
+  <!-- v1.5.9: Load/Save first, then settings -->
+  <div class="project-grid">
+    <div class="field-group">
+      <label class="field-label">Load</label>
+      <button class="icon-btn-large" onclick="loadProjectFromFile()" title="Load Project">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          <line x1="12" y1="11" x2="12" y2="17"/>
+          <polyline points="9 14 12 11 15 14"/>
+        </svg>
+      </button>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Save</label>
+      <button class="icon-btn-large" onclick="saveProjectToFile()" title="Save Project">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+          <polyline points="17 21 17 13 7 13 7 21"/>
+          <polyline points="7 3 7 8 15 8"/>
+        </svg>
+      </button>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Title</label>
+      <input id="title" type="text" placeholder="Project title" value="New Production"/>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Style</label>
+      <select id="style" onchange="updateProjectStyle(this.value)">__STYLE_OPTIONS__</select>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Aspect</label>
+      <select id="aspect">
+        <option value="horizontal">Horizontal (16:9)</option>
+        <option value="vertical">Vertical (9:16)</option>
+        <option value="square">Square (1:1)</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label class="field-label">LLM</label>
+      <select id="llm">
+        <option value="claude">Claude</option>
+        <option value="openai">OpenAI</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Image Model</label>
+      <select id="imageModel" onchange="updateImageModel(this.value)">
+        <option value="nanobanana" selected>Nano Banana Pro</option>
+        <option value="seedream45">Seedream 4.5</option>
+        <option value="flux2">Flux 2</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label class="field-label">Video Model</label>
+      <select id="videoModel" disabled title="Coming soon">
+        <option value="none" selected>None (Stills only)</option>
+        <option value="kling" disabled>Kling 1.6 (Coming soon)</option>
+        <option value="runway" disabled>Runway Gen-3 (Coming soon)</option>
+        <option value="minimax" disabled>MiniMax (Coming soon)</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label class="checkbox-label">
+        <input type="checkbox" id="useWhisper" onchange="updateWhisperSetting(this.checked)"/>
+        <span>Audio expert</span>
+      </label>
+    </div>
+  </div>
+  <input id="projectId" type="hidden" value=""/>
+</div>
+</div>
+
+<!-- AUDIO DNA + CAST MATRIX side by side -->
+<div class="two-column">
+
+  <!-- AUDIO DNA -->
+  <div class="card" id="section-audio">
+    <div class="card-header" onclick="toggleSectionCollapse('section-audio')">
+      <h2>AUDIO DNA <span id="audioStatus" class="module-status"></span></h2>
+      <div id="audioHeaderRight" onclick="event.stopPropagation()">
+        <input id="audioFile" type="file" accept=".mp3,.wav,audio/*" class="hidden" onchange="importAudio()"/>
+        <button id="importAudioBtn" class="accent-btn" onclick="document.getElementById('audioFile').click()">IMPORT AUDIO</button>
+        <button id="lockAudioBtn" class="accent-btn hidden" onclick="toggleAudioLock()">LOCK AUDIO</button>
+        <span id="audioLockedBadge" class="status-badge-green hidden" onclick="toggleAudioLock()" style="cursor: pointer;" title="Click to unlock">AUDIO LOCKED ✓</span>
+      </div>
+    </div>
+    
+    <!-- Patch 2: Always show fields, fix parsing, 6x lyrics -->
+    <div class="module-content">
+      <div id="audioInfo" class="audio-info">
+        <div class="info-pills-row">
+          <div class="info-pill clickable" onclick="editBpm()" title="Click to edit BPM">
+            <span class="pill-label">BPM</span>
+            <span id="audioBpm" class="pill-value">—</span>
+            <span class="pill-edit">✎</span>
+          </div>
+          <div class="info-pill clickable" onclick="showAudioPopup('style')">
+            <span class="pill-label">STYLE</span>
+            <span id="audioStyle" class="pill-value">—</span>
+          </div>
+          <div class="info-pill clickable" onclick="showAudioPopup('structure')">
+            <span class="pill-label">STRUCTURE</span>
+            <span id="audioStructure" class="pill-value">—</span>
+          </div>
+        </div>
+        <div class="info-pills-row">
+          <div class="info-pill clickable" onclick="showAudioPopup('dynamics')">
+            <span class="pill-label">DYNAMICS</span>
+            <span id="audioDynamics" class="pill-value">—</span>
+          </div>
+          <div class="info-pill clickable" onclick="showAudioPopup('delivery')">
+            <span class="pill-label">DELIVERY</span>
+            <span id="audioDelivery" class="pill-value">—</span>
+          </div>
+          <div class="info-pill clickable" onclick="showAudioPopup('story')">
+            <span class="pill-label">STORY</span>
+            <span id="audioStory" class="pill-value">—</span>
+          </div>
+        </div>
+        <!-- Patch 2: Lyrics 6x height, scrollable -->
+        <div class="info-pill clickable lyrics-pill" onclick="showAudioPopup('lyrics')">
+          <span class="pill-label">LYRICS</span>
+          <div id="audioLyrics" class="lyrics-content">—</div>
+        </div>
+      </div>
+    </div>
+    <textarea id="audioResult" class="hidden"></textarea>
+  </div>
+
+  <!-- CAST MATRIX -->
+  <div class="card" id="section-cast">
+    <div class="card-header" onclick="toggleSectionCollapse('section-cast')">
+      <h2>CAST MATRIX <span id="castStatus" class="module-status"></span></h2>
+      <div id="castHeaderRight" onclick="event.stopPropagation()">
+        <button id="lockCastBtn" class="accent-btn" onclick="toggleCastLock()">LOCK CAST</button>
+        <span id="castLockedBadge" class="status-badge-green hidden" onclick="toggleCastLock()" style="cursor: pointer;" title="Click to unlock cast">CAST LOCKED ✓</span>
+      </div>
+    </div>
+    
+    <!-- v1.4: Cast list with role dropdown, impact slider, name, prompt -->
+    <div class="module-content">
+      <div id="castList" class="cast-list-rows"></div>
+      <div class="add-cast-center" id="addCastBtnContainer">
+        <button class="add-cast-circle" onclick="addCastMember()">+</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- STORYBOARD -->
+<div class="card" id="section-storyboard">
+<h2>STORYBOARD <span id="storyboardStatus" class="module-status"></span></h2>
+
+<div class="module-content">
+  <div class="storyboard-actions">
+    <button class="accent-btn" onclick="createTimeline()" id="createTimelineBtn" disabled title="Lock audio and cast first">CREATE TIMELINE</button>
+    <button class="accent-btn" onclick="allShots()" id="allShotsBtn" disabled>ALL SHOTS</button>
+  </div>
+
+  <!-- v1.5.9: Story Arc first, then Timeline -->
+  <div class="subsection">
+    <div id="storySummaryBox" class="story-summary-box hidden">
+      <span class="story-summary-label">STORY ARC</span>
+      <div id="storySummaryText" class="story-summary-text"></div>
+    </div>
+    
+    <div class="section-header">
+      <h3>Timeline</h3>
+      <span id="timelineInfo" class="section-info"></span>
+    </div>
+    <div id="timelineContainer" class="timeline-container-full"></div>
+  </div>
+
+  <!-- Shots -->
+  <div class="subsection">
+    <div class="section-header">
+      <h3>Shots <span id="shotsCount" class="count-badge">0</span></h3>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="small" onclick="refreshFromServer()" title="Refresh from server">⟳</button>
+        <button class="accent-btn" onclick="renderAllShots()" id="renderAllShotsBtn">RENDER ALL</button>
+        <button class="stop-btn hidden" onclick="stopRenderQueue()" id="stopRenderBtn" title="Stop rendering">STOP</button>
+        <input type="text" id="negativePromptInput" placeholder="Negative prompt..." class="negative-prompt-input" title="Override negative prompt for all renders"/>
+      </div>
+    </div>
+    <div id="shotsGrid" class="shots-grid"></div>
+  </div>
+</div>
+</div>
+
+<!-- PREVIEW (was VIDEO) -->
+<div class="card" id="section-preview">
+<h2>PREVIEW <span id="previewStatus" class="module-status"></span></h2>
+<div class="module-content">
+  <div class="row" style="gap: 16px; align-items: flex-end;">
+    <div>
+      <label class="field-label">Fade Duration (scene transitions)</label>
+      <select id="fadeDuration">
+        <option value="0.3">0.3s (Quick)</option>
+        <option value="0.5" selected>0.5s (Normal)</option>
+        <option value="0.8">0.8s (Slow)</option>
+        <option value="1.0">1.0s (Very Slow)</option>
+      </select>
+    </div>
+    <div>
+      <label class="field-label">Resolution</label>
+      <select id="videoResolution">
+        <option value="1920x1080" selected>1080p (1920×1080)</option>
+        <option value="1280x720">720p (1280×720)</option>
+        <option value="3840x2160">4K (3840×2160)</option>
+      </select>
+    </div>
+    <button onclick="exportVideo()" id="exportVideoBtn" class="accent-btn">EXPORT PREVIEW</button>
+  </div>
+  <div id="videoResult" class="muted" style="margin-top: 16px;">
+    Render all shots first, then export preview with audio.
+  </div>
+</div>
+</div>
+
+<!-- Popups -->
+<div id="imagePopup" class="popup hidden" onclick="hidePopup('imagePopup')">
+  <div class="popup-content-large" onclick="event.stopPropagation()">
+    <img id="popupImage" src=""/>
+    <button class="popup-close" onclick="hidePopup('imagePopup')">✕</button>
+  </div>
+</div>
+
+<div id="audioPopup" class="popup hidden" onclick="hidePopup('audioPopup')">
+  <div class="popup-content" onclick="event.stopPropagation()">
+    <h3 id="audioPopupTitle">Detail</h3>
+    <div id="audioPopupContent" class="popup-body"></div>
+    <button onclick="hidePopup('audioPopup')">Close</button>
+  </div>
+</div>
+
+<!-- v1.5.3: Scene popup - v1.6.5: Updated to show all 3 previews -->
+<div id="scenePopup" class="popup hidden" onclick="hidePopup('scenePopup')">
+  <div class="popup-content-scene" onclick="event.stopPropagation()">
+    <button class="popup-close" onclick="hidePopup('scenePopup')">✕</button>
+    <h3 id="scenePopupTitle">Scene</h3>
+    <p id="scenePopupPrompt" class="scene-popup-prompt"></p>
+
+    <!-- v1.6.5: Three preview boxes with shot-card styling (edit prompt, +, →) -->
+    <div class="scene-popup-previews">
+      <div class="scene-preview-box" id="sceneDecor1Box">
+        <span class="preview-label">DECOR 1 (MAIN)</span>
+        <div class="preview-image-wrap">
+          <img id="scenePopupImage" src=""/>
+          <span id="scenePopupDecorLock" class="scene-lock-badge hidden" title="Decor locked"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/></svg></span>
+        </div>
+        <div class="shot-edit-row">
+          <input type="text" id="sceneDecor1Prompt" class="shot-edit-input" placeholder="Edit prompt..."/>
+          <button id="sceneDecor1RefBtn" class="shot-ref-btn" title="Add reference">+</button>
+          <button id="sceneDecor1Go" class="shot-edit-go" title="Apply edit">→</button>
+          <button id="sceneDecor1Lock" class="preview-lock-btn" title="Lock decor">🔒</button>
+        </div>
+      </div>
+
+      <div class="scene-preview-box" id="sceneDecor2Box">
+        <span class="preview-label">DECOR 2 (ALT)</span>
+        <div class="preview-image-wrap">
+          <img id="scenePopupImageAltImg" src=""/>
+        </div>
+        <div class="shot-edit-row">
+          <input type="text" id="sceneDecor2Prompt" class="shot-edit-input" placeholder="Alt decor prompt..."/>
+          <button id="sceneDecor2RefBtn" class="shot-ref-btn" title="Add reference">+</button>
+          <button id="sceneDecor2Go" class="shot-edit-go" title="Generate alt">→</button>
+        </div>
+      </div>
+
+      <div class="scene-preview-box" id="sceneWardrobeBox">
+        <span class="preview-label">WARDROBE PREVIEW</span>
+        <div class="preview-image-wrap">
+          <img id="sceneWardrobePreviewImg" src=""/>
+          <span id="sceneWardrobeEmpty" class="preview-empty">No wardrobe set</span>
+        </div>
+        <div class="shot-edit-row">
+          <input type="text" id="sceneWardrobeInput" class="shot-edit-input" placeholder="Disheveled domestic wear..."/>
+          <button id="sceneWardrobeRefBtn" class="shot-ref-btn" title="Add cast ref">+</button>
+          <button id="sceneWardrobeGo" class="shot-edit-go" title="Generate preview">→</button>
+          <button id="sceneWardrobeLock" class="preview-lock-btn" title="Lock wardrobe">🔒</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- v1.5.3: Cost breakdown popup -->
+<div id="costPopup" class="popup hidden" onclick="hidePopup('costPopup')">
+  <div class="popup-content" onclick="event.stopPropagation()" style="max-width: 500px;">
+    <button class="popup-close" onclick="hidePopup('costPopup')">✕</button>
+    <h3 style="margin-bottom: 16px;">Cost Breakdown</h3>
+    <div id="costBreakdownContent"></div>
+    <p class="muted" style="margin-top: 16px; font-size: 12px;">
+      Note: Prices are estimates. Actual FAL charges may include BTW/VAT (~21%).
+    </p>
+  </div>
+</div>
+
+<!-- v1.5.3: Shot Editor popup -->
+<div id="shotEditorPopup" class="popup hidden" onclick="closeShotEditor()">
+  <div class="popup-content shot-editor-content" onclick="event.stopPropagation()">
+    <button class="popup-close" onclick="closeShotEditor()">✕</button>
+    <h3>Edit Shot</h3>
+    
+    <div class="shot-editor-layout">
+      <div class="shot-editor-preview">
+        <img id="shotEditorImage" src="" alt="Current render"/>
+      </div>
+      
+      <div class="shot-editor-controls">
+        <label>Edit Prompt:</label>
+        <textarea id="shotEditPrompt" rows="3" placeholder="e.g. 'remove the person in background' or 'make it sunset lighting' or 'add more detail to the foreground'"></textarea>
+        
+        <label>Add Extra Cast Refs:</label>
+        <div class="shot-editor-cast-row">
+          <select id="shotEditorCast">
+            <option value="">-- Add cast member --</option>
+          </select>
+          <button onclick="addCastToShotEditor()">+ Add</button>
+        </div>
+        
+        <div id="shotEditorExtraRefs" class="extra-refs-container"></div>
+        
+        <p class="muted" style="font-size: 11px; margin-top: 8px;">
+          The current render + selected cast refs will be sent to img2img with your edit prompt.
+        </p>
+        
+        <div class="shot-editor-actions">
+          <button onclick="closeShotEditor()">Cancel</button>
+          <button class="accent-btn" onclick="submitShotEdit()">Apply Edit</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- v1.5.9: Shot reference picker popup -->
+<div id="shotRefPicker" class="popup hidden" onclick="hidePopup('shotRefPicker')">
+  <div class="popup-content" onclick="event.stopPropagation()" style="max-width: 420px;">
+    <button class="popup-close" onclick="hidePopup('shotRefPicker')">✕</button>
+    <h3>Add Reference</h3>
+    <div id="shotRefPickerContent" style="max-height: 350px; overflow-y: auto; margin-top: 12px;"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body></html>

@@ -298,6 +298,8 @@ body {
   width: 100%;
   animation: pulse 1s ease-in-out infinite;
 }
+
+.cost-value {
   display: flex;
   align-items: center;
   gap: 4px;

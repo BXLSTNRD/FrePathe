@@ -183,7 +183,6 @@
       <div id="castHeaderRight" onclick="event.stopPropagation()">
         <button id="lockCastBtn" class="accent-btn" onclick="toggleCastLock()">LOCK CAST</button>
         <span id="castLockedBadge" class="status-badge-green hidden" onclick="toggleCastLock()" style="cursor: pointer;" title="Click to unlock cast">CAST LOCKED ✓</span>
-        <span id="styleLockBadge" class="status-badge-yellow hidden" onclick="clearStyleLock()" style="cursor: pointer; margin-left: 8px;" title="Click to clear style lock">STYLE LOCKED</span>
       </div>
     </div>
     
@@ -291,7 +290,7 @@
     <h3 id="scenePopupTitle">Scene</h3>
     <p id="scenePopupPrompt" class="scene-popup-prompt"></p>
 
-    <!-- v1.6.5: Three preview boxes side by side -->
+    <!-- v1.6.5: Three preview boxes with shot-card styling (edit prompt, +, →) -->
     <div class="scene-popup-previews">
       <div class="scene-preview-box" id="sceneDecor1Box">
         <span class="preview-label">DECOR 1 (MAIN)</span>
@@ -299,10 +298,11 @@
           <img id="scenePopupImage" src=""/>
           <span id="scenePopupDecorLock" class="scene-lock-badge hidden" title="Decor locked"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/></svg></span>
         </div>
-        <div class="preview-actions">
-          <input type="text" id="sceneDecor1Prompt" placeholder="Edit prompt..." class="preview-prompt"/>
-          <button id="sceneDecor1Rerender" class="preview-action-btn" title="Re-render">↻</button>
-          <button id="sceneDecor1Lock" class="preview-action-btn" title="Lock decor">🔒</button>
+        <div class="shot-edit-row">
+          <input type="text" id="sceneDecor1Prompt" class="shot-edit-input" placeholder="Edit prompt..."/>
+          <button id="sceneDecor1RefBtn" class="shot-ref-btn" title="Add reference">+</button>
+          <button id="sceneDecor1Go" class="shot-edit-go" title="Apply edit">→</button>
+          <button id="sceneDecor1Lock" class="preview-lock-btn" title="Lock decor">🔒</button>
         </div>
       </div>
 
@@ -311,10 +311,10 @@
         <div class="preview-image-wrap">
           <img id="scenePopupImageAltImg" src=""/>
         </div>
-        <div class="preview-actions">
-          <input type="text" id="sceneDecor2Prompt" placeholder="Alt decor prompt..." class="preview-prompt"/>
-          <button id="sceneDecor2Rerender" class="preview-action-btn" title="Generate alt">↻</button>
-          <button id="sceneDecor2Lock" class="preview-action-btn hidden" title="Lock alt">🔒</button>
+        <div class="shot-edit-row">
+          <input type="text" id="sceneDecor2Prompt" class="shot-edit-input" placeholder="Alt decor prompt..."/>
+          <button id="sceneDecor2RefBtn" class="shot-ref-btn" title="Add reference">+</button>
+          <button id="sceneDecor2Go" class="shot-edit-go" title="Generate alt">→</button>
         </div>
       </div>
 
@@ -324,10 +324,11 @@
           <img id="sceneWardrobePreviewImg" src=""/>
           <span id="sceneWardrobeEmpty" class="preview-empty">No wardrobe set</span>
         </div>
-        <div class="preview-actions">
-          <input type="text" id="sceneWardrobeInput" placeholder="Disheveled domestic wear: lead in..." class="preview-prompt"/>
-          <button id="sceneWardrobeGenerate" class="preview-action-btn" title="Generate preview">→</button>
-          <button id="sceneWardrobeLock" class="preview-action-btn" title="Lock wardrobe">🔒</button>
+        <div class="shot-edit-row">
+          <input type="text" id="sceneWardrobeInput" class="shot-edit-input" placeholder="Disheveled domestic wear..."/>
+          <button id="sceneWardrobeRefBtn" class="shot-ref-btn" title="Add cast ref">+</button>
+          <button id="sceneWardrobeGo" class="shot-edit-go" title="Generate preview">→</button>
+          <button id="sceneWardrobeLock" class="preview-lock-btn" title="Lock wardrobe">🔒</button>
         </div>
       </div>
     </div>

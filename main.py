@@ -2686,7 +2686,8 @@ def api_expand_all(project_id: str):
 
     all_shots: List[Dict[str,Any]] = []
     for seq in seqs:
-        schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
+        # v1.6.5: Updated schema to include per-shot wardrobe
+        schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"specific wardrobe for this shot"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
         system = (
             "Return ONLY valid JSON. No prose. No markdown.\n"
             "Expand ONE sequence into 5 to 8 shots.\n"
@@ -2698,7 +2699,11 @@ def api_expand_all(project_id: str):
             "- EXTRA cast members MUST appear in at least 1-2 shots across the video\n"
             "- EVERY cast member must appear somewhere in the video!\n"
             "- Use the cast[] array to specify which cast_ids appear in each shot\n"
-            "- If a cast member has a 'wardrobe' description, incorporate it into the prompt_base\n\n"
+            "WARDROBE PER SHOT (v1.6.5):\n"
+            "- Use the wardrobe object to specify costume/clothing for EACH cast member in EACH shot\n"
+            "- Key is cast_id, value is the wardrobe description for that character in this specific shot\n"
+            "- Wardrobe can change between shots (e.g., 'disheveled' in verse, 'formal suit' in chorus)\n"
+            "- DO NOT put wardrobe in prompt_base, use the wardrobe field instead\n\n"
             f"Schema hint:\n{schema_hint}\n"
         )
         user = json.dumps({
@@ -2739,6 +2744,17 @@ def api_expand_all(project_id: str):
                         resolved_cast.append(resolved_id)
                         print(f"[INFO] Including cast name in prompt: {cid}")
 
+            # v1.6.5: Process wardrobe per cast member
+            raw_wardrobe = sh.get("wardrobe") or {}
+            resolved_wardrobe = {}
+            if isinstance(raw_wardrobe, dict):
+                for wk, wv in raw_wardrobe.items():
+                    # Resolve wardrobe key to valid cast_id
+                    wk_lower = str(wk).lower().strip()
+                    if wk_lower in name_to_id:
+                        resolved_id = name_to_id[wk_lower]
+                        resolved_wardrobe[resolved_id] = str(wv).strip()
+
             all_shots.append({
                 "shot_id": shot_id,
                 "sequence_id": seq["sequence_id"],
@@ -2747,6 +2763,7 @@ def api_expand_all(project_id: str):
                 "structure_type": normalize_structure_type(sh.get("structure_type", seq.get("structure_type","verse"))),
                 "energy": float(clamp(safe_float(sh.get("energy", seq.get("energy",0.5))), 0.0, 1.0)),
                 "cast": resolved_cast,
+                "wardrobe": resolved_wardrobe,  # v1.6.5: Per-shot wardrobe
                 "intent": (sh.get("intent") or "").strip(),
                 "camera_language": (sh.get("camera_language") or "").strip(),
                 "environment": (sh.get("environment") or "").strip(),
@@ -2797,15 +2814,20 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
             "impact": f"{int(impact*100)}%",
         })
 
-    schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
+    # v1.6.5: Updated schema to include per-shot wardrobe
+    schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"specific wardrobe for this shot"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
     system = (
         "Return ONLY valid JSON. No prose. No markdown.\n"
         "Expand ONE sequence into 5 to 8 shots.\n"
         "Shots must fit within the sequence start/end. No gaps, no overlaps.\n"
         "SHOT DURATION: Each shot should be 2-5 seconds. NEVER exceed 5 seconds per shot.\n"
+        "WARDROBE PER SHOT (v1.6.5):\n"
+        "- Use the wardrobe object to specify costume/clothing for EACH cast member in EACH shot\n"
+        "- Key is cast_id, value is the wardrobe description for that character in this specific shot\n"
+        "- Wardrobe can change between shots (e.g., 'disheveled' in verse, 'formal suit' in chorus)\n"
+        "- DO NOT put wardrobe in prompt_base, use the wardrobe field instead\n\n"
         f"Schema hint:\n{schema_hint}\n"
     )
-
 
     user = json.dumps({
         "sequence": seq,
@@ -2842,6 +2864,16 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
                     resolved_cast.append(resolved_id)
                     print(f"[INFO] Including cast name in prompt: {cid}")
 
+        # v1.6.5: Process wardrobe per cast member
+        raw_wardrobe = sh.get("wardrobe") or {}
+        resolved_wardrobe = {}
+        if isinstance(raw_wardrobe, dict):
+            for wk, wv in raw_wardrobe.items():
+                wk_lower = str(wk).lower().strip()
+                if wk_lower in name_to_id:
+                    resolved_id = name_to_id[wk_lower]
+                    resolved_wardrobe[resolved_id] = str(wv).strip()
+
         all_shots.append({
             "shot_id": shot_id,
             "sequence_id": seq_id,
@@ -2850,6 +2882,7 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
             "structure_type": normalize_structure_type(sh.get("structure_type", seq.get("structure_type","verse"))),
             "energy": float(clamp(safe_float(sh.get("energy", seq.get("energy",0.5))), 0.0, 1.0)),
             "cast": resolved_cast,
+            "wardrobe": resolved_wardrobe,  # v1.6.5: Per-shot wardrobe
             "intent": (sh.get("intent") or "").strip(),
             "camera_language": (sh.get("camera_language") or "").strip(),
             "environment": (sh.get("environment") or "").strip(),
@@ -2914,31 +2947,29 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         prompt = f"{prompt}, {negative_prompt_override}"
         print(f"[INFO] Using negative prompt override: {negative_prompt_override[:50]}...")
     
-    # v1.4: Add cast prompt_extra to the prompt (can be overridden by scene wardrobe)
+    # v1.6.5: Wardrobe per-shot and per-character (NOT scene-wide)
+    # Priority: shot.wardrobe[cast_id] > cast.prompt_extra
     cast_ids = shot.get("cast") or []
     cast_list = state.get("cast", [])
-    
-    # v1.6.1: Get scene wardrobe (overrides cast prompt_extra)
-    scene_wardrobe = None
-    seq_id = shot.get("sequence_id")
-    if seq_id:
-        sequences = state.get("storyboard", {}).get("sequences", [])
-        seq_idx = next((i for i, s in enumerate(sequences) if s.get("sequence_id") == seq_id), None)
-        if seq_idx is not None:
-            scenes = state.get("cast_matrix", {}).get("scenes", [])
-            if seq_idx < len(scenes):
-                scene_wardrobe = scenes[seq_idx].get("wardrobe", "").strip()
-    
-    # Apply wardrobe: scene wardrobe overrides cast prompt_extra
-    if scene_wardrobe:
-        prompt = f"{prompt}, {scene_wardrobe}"
-        print(f"[INFO] Using scene wardrobe: {scene_wardrobe[:50]}...")
-    else:
-        # Fallback to cast prompt_extra if no scene wardrobe
-        for cast_id in cast_ids[:2]:
-            cast_member = next((c for c in cast_list if c.get("cast_id") == cast_id), None)
-            if cast_member and cast_member.get("prompt_extra"):
-                prompt = f"{prompt}, {cast_member['prompt_extra']}"
+
+    # v1.6.5: Shot-level wardrobe per character (keyed by cast_id)
+    shot_wardrobes = shot.get("wardrobe") or {}  # Dict of {cast_id: "wardrobe description"}
+
+    # Apply wardrobe per cast member
+    for cast_id in cast_ids[:2]:
+        cast_member = next((c for c in cast_list if c.get("cast_id") == cast_id), None)
+        if not cast_member:
+            continue
+
+        # v1.6.5: Check shot-level wardrobe for this specific cast member first
+        if shot_wardrobes.get(cast_id):
+            wardrobe_text = shot_wardrobes[cast_id].strip()
+            prompt = f"{prompt}, {cast_member.get('name', cast_id)}: {wardrobe_text}"
+            print(f"[INFO] Using shot wardrobe for {cast_id}: {wardrobe_text[:40]}...")
+        # Fallback to cast prompt_extra if no shot-level wardrobe
+        elif cast_member.get("prompt_extra"):
+            prompt = f"{prompt}, {cast_member['prompt_extra']}"
+            print(f"[INFO] Using cast prompt_extra for {cast_id}")
     
     # Collect reference images (convert local paths to full URLs for fal.ai)
     ref_images = []
@@ -2960,7 +2991,12 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
                     print(f"[WARN] Failed to upload style lock image: {e}")
     
     # 1. Get scene decor_refs for this shot's sequence
-    # Note: seq_id and seq_idx already computed above for wardrobe
+    seq_id = shot.get("sequence_id")
+    seq_idx = None
+    if seq_id:
+        sequences = state.get("storyboard", {}).get("sequences", [])
+        seq_idx = next((i for i, s in enumerate(sequences) if s.get("sequence_id") == seq_id), None)
+
     if seq_id and seq_idx is not None:
         scenes = state.get("cast_matrix", {}).get("scenes", [])
         if seq_idx < len(scenes):

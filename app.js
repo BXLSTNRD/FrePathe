@@ -1291,17 +1291,11 @@ function updateCastLockUI(isLocked) {
   updateButtonStates();
 }
 
-/// v1.6.3: Style lock UI
-// v1.6.5: Badge is hidden when actively used (during rendering)
+/// v1.6.5: Style lock UI removed - no badge shown
+// Style lock still functions internally, just no UI indicator
 function updateStyleLockUI(isLocked) {
-  const badge = document.getElementById("styleLockBadge");
-  // v1.6.5: Hide badge when style lock is in use (it's redundant when active)
-  // The badge is informational, so hide it when style lock is set to reduce visual clutter
-  if (isLocked && ACTIVE_RENDERS === 0) {
-    badge?.classList.remove("hidden");
-  } else {
-    badge?.classList.add("hidden");
-  }
+  // v1.6.5: Badge completely removed from UI per bugfix 4
+  // Style lock is handled internally without visual indicator
 }
 
 // v1.6.3: Clear style lock
@@ -1707,9 +1701,10 @@ function showScenePopup(sceneId) {
     decorLockBadge.classList.toggle("hidden", !decorLocked);
   }
 
-  // DECOR 1 controls
+  // v1.6.5: DECOR 1 controls with shot-card styling (input, +, →, lock)
   const decor1Prompt = document.getElementById("sceneDecor1Prompt");
-  const decor1Rerender = document.getElementById("sceneDecor1Rerender");
+  const decor1RefBtn = document.getElementById("sceneDecor1RefBtn");
+  const decor1Go = document.getElementById("sceneDecor1Go");
   const decor1Lock = document.getElementById("sceneDecor1Lock");
 
   if (decor1Prompt) {
@@ -1719,9 +1714,13 @@ function showScenePopup(sceneId) {
       if (e.key === 'Enter') editSceneWithPrompt(sceneId, decor1Prompt.value);
     };
   }
-  if (decor1Rerender) {
-    decor1Rerender.onclick = () => decor1Prompt?.value ? editSceneWithPrompt(sceneId, decor1Prompt.value) : rerenderScene(sceneId);
-    decor1Rerender.disabled = decorLocked;
+  if (decor1RefBtn) {
+    decor1RefBtn.onclick = () => openSceneRefPicker(sceneId, 'decor1');
+    decor1RefBtn.disabled = decorLocked;
+  }
+  if (decor1Go) {
+    decor1Go.onclick = () => decor1Prompt?.value ? editSceneWithPrompt(sceneId, decor1Prompt.value) : rerenderScene(sceneId);
+    decor1Go.disabled = decorLocked;
   }
   if (decor1Lock) {
     decor1Lock.textContent = decorLocked ? "🔓" : "🔒";
@@ -1741,9 +1740,10 @@ function showScenePopup(sceneId) {
     }
   }
 
-  // DECOR 2 controls
+  // v1.6.5: DECOR 2 controls with shot-card styling (input, +, →)
   const decor2Prompt = document.getElementById("sceneDecor2Prompt");
-  const decor2Rerender = document.getElementById("sceneDecor2Rerender");
+  const decor2RefBtn = document.getElementById("sceneDecor2RefBtn");
+  const decor2Go = document.getElementById("sceneDecor2Go");
 
   if (decor2Prompt) {
     decor2Prompt.value = "";
@@ -1751,8 +1751,11 @@ function showScenePopup(sceneId) {
       if (e.key === 'Enter') generateAltDecor(sceneId, decor2Prompt.value);
     };
   }
-  if (decor2Rerender) {
-    decor2Rerender.onclick = () => generateAltDecor(sceneId, decor2Prompt?.value || "");
+  if (decor2RefBtn) {
+    decor2RefBtn.onclick = () => openSceneRefPicker(sceneId, 'decor2');
+  }
+  if (decor2Go) {
+    decor2Go.onclick = () => generateAltDecor(sceneId, decor2Prompt?.value || "");
   }
 
   // WARDROBE PREVIEW
@@ -1771,9 +1774,10 @@ function showScenePopup(sceneId) {
     }
   }
 
-  // WARDROBE controls
+  // v1.6.5: WARDROBE controls with shot-card styling (input, +, →, lock)
   const wardrobeInput = document.getElementById("sceneWardrobeInput");
-  const wardrobeGenerate = document.getElementById("sceneWardrobeGenerate");
+  const wardrobeRefBtn = document.getElementById("sceneWardrobeRefBtn");
+  const wardrobeGo = document.getElementById("sceneWardrobeGo");
   const wardrobeLockBtn = document.getElementById("sceneWardrobeLock");
 
   if (wardrobeInput) {
@@ -1785,9 +1789,13 @@ function showScenePopup(sceneId) {
       }
     };
   }
-  if (wardrobeGenerate) {
-    wardrobeGenerate.onclick = () => updateSceneWardrobeAndGenerate(sceneId, wardrobeInput?.value || "");
-    wardrobeGenerate.disabled = wardrobeLocked;
+  if (wardrobeRefBtn) {
+    wardrobeRefBtn.onclick = () => openSceneRefPicker(sceneId, 'wardrobe');
+    wardrobeRefBtn.disabled = wardrobeLocked;
+  }
+  if (wardrobeGo) {
+    wardrobeGo.onclick = () => updateSceneWardrobeAndGenerate(sceneId, wardrobeInput?.value || "");
+    wardrobeGo.disabled = wardrobeLocked;
   }
   if (wardrobeLockBtn) {
     wardrobeLockBtn.textContent = wardrobeLocked ? "🔓" : "🔒";
@@ -1841,6 +1849,84 @@ async function generateAltDecor(sceneId, altPrompt) {
   } catch (e) {
     showError("Failed to generate alt decor: " + e.message);
   }
+}
+
+// v1.6.5: Scene reference picker - similar to shot ref picker
+// Type can be 'decor1', 'decor2', or 'wardrobe'
+window.SCENE_REF_CONTEXT = null;
+
+function openSceneRefPicker(sceneId, type) {
+  const picker = document.getElementById("shotRefPicker");  // Reuse shot ref picker popup
+  const content = document.getElementById("shotRefPickerContent");
+
+  // Get cast refs
+  const cast = PROJECT_STATE?.cast || [];
+  const charRefs = PROJECT_STATE?.cast_matrix?.character_refs || {};
+
+  // Get scene decors for reference
+  const scenes = PROJECT_STATE?.cast_matrix?.scenes || [];
+
+  // Build cast refs section
+  const castRefsHtml = cast.map(c => {
+    const refs = charRefs[c.cast_id] || {};
+    const refA = refs.ref_a;
+    const refB = refs.ref_b;
+    if (!refA && !refB) return '';
+
+    return `
+      <div class="ref-pick-cast">
+        <div class="ref-pick-cast-name">${c.name || c.cast_id}</div>
+        <div class="ref-pick-cast-imgs">
+          ${refA ? `<img src="${refA}" onclick="selectSceneRef('${sceneId}', '${type}', '${refA}', '${c.cast_id}_A')" title="Ref A"/>` : ''}
+          ${refB ? `<img src="${refB}" onclick="selectSceneRef('${sceneId}', '${type}', '${refB}', '${c.cast_id}_B')" title="Ref B"/>` : ''}
+        </div>
+      </div>
+    `;
+  }).filter(Boolean).join("");
+
+  // Build scene decors section (for reference)
+  const sceneDecorsHtml = scenes.filter(s => s.decor_refs?.[0]).map(s => `
+    <div class="ref-pick-item" onclick="selectSceneRef('${sceneId}', '${type}', '${s.decor_refs[0]}', '${s.scene_id}')">
+      <img src="${s.decor_refs[0]}"/>
+      <div class="ref-pick-label">${s.title || s.scene_id}</div>
+    </div>
+  `).join("");
+
+  content.innerHTML = `
+    <h4 style="margin:0 0 8px;color:#888;">Select Reference for ${type === 'wardrobe' ? 'Wardrobe' : type === 'decor2' ? 'Alt Decor' : 'Main Decor'}</h4>
+    ${castRefsHtml ? `
+      <div class="ref-section">
+        <div class="ref-section-title">CAST REFS</div>
+        <div class="ref-cast-grid">${castRefsHtml}</div>
+      </div>
+    ` : ''}
+    ${sceneDecorsHtml ? `
+      <div class="ref-section">
+        <div class="ref-section-title">SCENE DECORS</div>
+        <div class="ref-shots-grid">${sceneDecorsHtml}</div>
+      </div>
+    ` : ''}
+    ${!castRefsHtml && !sceneDecorsHtml ? '<div class="muted">No references available</div>' : ''}
+  `;
+
+  window.SCENE_REF_CONTEXT = { sceneId, type };
+  picker.classList.remove("hidden");
+}
+
+// Select a reference for scene element
+function selectSceneRef(sceneId, type, refUrl, refLabel) {
+  // Visual feedback
+  const btn = document.getElementById(`scene${type.charAt(0).toUpperCase() + type.slice(1)}RefBtn`);
+  if (btn) {
+    btn.textContent = "✓";
+    btn.title = `Ref: ${refLabel}`;
+  }
+
+  // Store for later use (when go button is clicked)
+  window.SCENE_REF_SELECTED = window.SCENE_REF_SELECTED || {};
+  window.SCENE_REF_SELECTED[`${sceneId}_${type}`] = refUrl;
+
+  hidePopup("shotRefPicker");
 }
 
 // v1.6.3: Update scene wardrobe
@@ -2011,15 +2097,59 @@ function renderShots(state) {
   }).join("");
 }
 
+// v1.6.5: Track individual renders for stop button functionality
 async function renderShot(shotId) {
-  try {
-    setStatus(`Rendering ${shotId}…`, null, "storyboardStatus");
-    await apiCall(`/api/project/${pid()}/shot/${shotId}/render`, { method: "POST" });
-    setStatus("Shot rendered", 100, "storyboardStatus");
-    await refreshFromServer();
-  } catch (e) {
-    showError(e.message);
+  // Check if stopped before starting
+  if (RENDER_STOPPED) {
+    setStatus("Rendering stopped", 100, "storyboardStatus");
+    return;
   }
+
+  try {
+    ACTIVE_RENDERS++;
+    showStopButton();  // v1.6.5: Show stop button for any render
+
+    setStatus(`Rendering ${shotId}…`, null, "storyboardStatus");
+
+    // Check stop flag during render
+    if (RENDER_STOPPED) {
+      setStatus("Rendering stopped", 100, "storyboardStatus");
+      return;
+    }
+
+    await apiCall(`/api/project/${pid()}/shot/${shotId}/render`, { method: "POST" });
+
+    if (!RENDER_STOPPED) {
+      setStatus("Shot rendered", 100, "storyboardStatus");
+      await refreshFromServer();
+    }
+  } catch (e) {
+    if (!RENDER_STOPPED) {
+      showError(e.message);
+    }
+  } finally {
+    ACTIVE_RENDERS--;
+    if (ACTIVE_RENDERS === 0) {
+      hideStopButton();  // v1.6.5: Hide stop button when all renders done
+      RENDER_STOPPED = false;  // Reset flag for next render
+    }
+  }
+}
+
+// v1.6.5: Helper to show stop button
+function showStopButton() {
+  const stopBtn = document.getElementById("stopRenderBtn");
+  const renderAllBtn = document.getElementById("renderAllShotsBtn");
+  if (stopBtn) stopBtn.classList.remove("hidden");
+  if (renderAllBtn) renderAllBtn.classList.add("hidden");
+}
+
+// v1.6.5: Helper to hide stop button
+function hideStopButton() {
+  const stopBtn = document.getElementById("stopRenderBtn");
+  const renderAllBtn = document.getElementById("renderAllShotsBtn");
+  if (stopBtn) stopBtn.classList.add("hidden");
+  if (renderAllBtn) renderAllBtn.classList.remove("hidden");
 }
 
 // v1.5.4: Quick edit shot with prompt only (uses existing shot/edit endpoint)
@@ -2263,11 +2393,8 @@ async function renderAllShots() {
 
     setStatus(`Queued ${shotsToRender.length} shots…`, null, "storyboardStatus");
 
-    // v1.6.5: Show stop button, hide render all
-    const stopBtn = document.getElementById("stopRenderBtn");
-    const renderAllBtn = document.getElementById("renderAllShotsBtn");
-    if (stopBtn) stopBtn.classList.remove("hidden");
-    if (renderAllBtn) renderAllBtn.classList.add("hidden");
+    // v1.6.5: Use helper to show stop button
+    showStopButton();
 
     renderShots(PROJECT_STATE);  // Update UI to show queue status
 
@@ -2278,17 +2405,14 @@ async function renderAllShots() {
   }
 }
 
-// v1.6.5: Stop the render queue
+// v1.6.5: Stop the render queue - works for ANY active render
 function stopRenderQueue() {
   RENDER_STOPPED = true;
   RENDER_QUEUE.length = 0;  // Clear queue
   setStatus("Rendering stopped", 100, "storyboardStatus");
 
-  // v1.6.5: Hide stop button, show render all
-  const stopBtn = document.getElementById("stopRenderBtn");
-  const renderAllBtn = document.getElementById("renderAllShotsBtn");
-  if (stopBtn) stopBtn.classList.add("hidden");
-  if (renderAllBtn) renderAllBtn.classList.remove("hidden");
+  // v1.6.5: Use helper to hide stop button
+  hideStopButton();
 
   // Refresh to show current state
   renderShots(PROJECT_STATE);
@@ -2335,12 +2459,10 @@ async function processRenderQueue() {
     TOTAL_QUEUED = 0;
     COMPLETED_COUNT = 0;
     NEGATIVE_PROMPT_OVERRIDE = "";
+    RENDER_STOPPED = false;  // v1.6.5: Reset flag for next batch
 
-    // v1.6.5: Hide stop button, show render all
-    const stopBtn = document.getElementById("stopRenderBtn");
-    const renderAllBtn = document.getElementById("renderAllShotsBtn");
-    if (stopBtn) stopBtn.classList.add("hidden");
-    if (renderAllBtn) renderAllBtn.classList.remove("hidden");
+    // v1.6.5: Use helper to hide stop button
+    hideStopButton();
 
     await refreshFromServer();
   }

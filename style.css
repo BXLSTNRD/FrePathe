@@ -2203,6 +2203,28 @@ button.tiny {
   color: var(--accent);
 }
 
+/* v1.6.5: Preview lock button for scene popup */
+.preview-lock-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 3px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-lock-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* v1.5.5: Reference picker styles */
 .ref-section {
   margin-bottom: 16px;

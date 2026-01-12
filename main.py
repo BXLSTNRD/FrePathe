@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jsonschema import validate, ValidationError, Draft202012Validator
 
 # ========= Version =========
-VERSION = "1.6.3"
+VERSION = "1.6.5"
 
 # ========= v1.6.1: Retry Helper =========
 def retry_on_502(func: Callable, max_retries: int = 3, delay: float = 2.0):
@@ -1333,8 +1333,9 @@ def api_update_project_settings(project_id: str, payload: Dict[str, Any]):
         state["project"]["image_model_choice"] = payload["image_model"]
         state["project"]["render_models"] = locked_render_models(payload["image_model"])
         updated.append("image_model")
-    
-    save_project(state)
+
+    # v1.6.5: Always save settings changes (force=True) regardless of version mismatch
+    save_project(state, force=True)
     return {"updated": updated, "project": state["project"]}
 
 @app.get("/api/version")
@@ -1449,13 +1450,16 @@ def api_import_project(payload: Dict[str,Any]):
     """v1.12.2: Import a project from JSON file."""
     if not payload.get("project") or not payload["project"].get("id"):
         raise HTTPException(400, "Invalid project data: missing project.id")
-    
+
     # Validate before saving
     is_valid, errors = validate_project_state(payload, strict=False)
     if errors:
         print(f"[WARN] Importing project with validation errors: {errors}")
-    
-    save_project(payload, validate=False)
+
+    # v1.6.5: Update version to current so saves aren't blocked
+    payload["project"]["created_version"] = VERSION
+
+    save_project(payload, validate=False, force=True)
     return {"imported": True, "project_id": payload["project"]["id"]}
 
 @app.post("/api/project/{project_id}/llm")
@@ -2121,6 +2125,55 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
     
     return {"scene_id": scene_id, "decor_refs": decor_refs, "decor_alt": decor_alt}
 
+# v1.6.5: Generate alt decor for a scene
+@app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/decor_alt")
+def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict[str, Any] = None):
+    """Generate an alt decor image for the scene."""
+    state = load_project(project_id)
+    require_key("FAL_KEY", FAL_KEY)
+
+    cm = state.get("cast_matrix") or {}
+    scenes = cm.get("scenes") or []
+    scene = next((s for s in scenes if s.get("scene_id") == scene_id), None)
+    if not scene:
+        raise HTTPException(404, "Scene not found")
+
+    payload = payload or {}
+    alt_prompt = payload.get("prompt", "").strip()
+
+    aspect = state["project"]["aspect"]
+    style = state["project"]["style_preset"]
+    style_toks = style_tokens(style)
+
+    # Build prompt: base prompt + alt prompt + no people
+    base_prompt = scene.get("prompt", "").strip()
+    no_people = "no people, no person, no human, no figure, no silhouette, no character, no faces, no hands, no body"
+
+    if alt_prompt:
+        full_prompt = ", ".join(style_toks + [base_prompt, alt_prompt, no_people])
+    else:
+        # Just regenerate with slight variation
+        full_prompt = ", ".join(style_toks + [base_prompt, "alternative angle or lighting variation", no_people])
+
+    # Generate using text-to-image
+    model = locked_model_key(state)
+    result_url = call_txt2img(model, full_prompt, aspect, state)
+    track_cost(f"fal-ai/{model}", 1, state=state)
+
+    # Save locally
+    scene_num = scene_id.replace("scene_", "")
+    scene_title = sanitize_filename(scene.get("title", scene_id), 20)
+    local_path = download_image_locally(result_url, project_id, f"scene_{scene_id}_decor_alt", state=state, friendly_name=f"Sce{scene_num}_{scene_title}_DecorAlt")
+
+    # Update scene
+    scene["decor_alt"] = local_path
+    if alt_prompt:
+        scene["decor_alt_prompt"] = alt_prompt
+    save_project(state, force=True)
+
+    print(f"[INFO] Generated alt decor for {scene_id}")
+    return {"scene_id": scene_id, "decor_alt": local_path}
+
 # v1.5.4: Edit scene with custom prompt (img2img)
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/edit")
 def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,Any]):
@@ -2605,7 +2658,15 @@ def api_expand_all(project_id: str):
     duration_sec = float(meta.get("duration_sec") or 180.0)
     valid_cast = {c["cast_id"] for c in state.get("cast", []) if c.get("cast_id")}
     style = state["project"]["style_preset"]
-    
+
+    # v1.6.5: Build name-to-id mapping for resolving LLM responses that use names instead of IDs
+    name_to_id = {}
+    for c in state.get("cast", []):
+        if c.get("name"):
+            name_to_id[c["name"].lower().strip()] = c["cast_id"]
+        if c.get("cast_id"):
+            name_to_id[c["cast_id"].lower()] = c["cast_id"]
+
     # v1.5.3: Build cast info with roles and impact for shot distribution
     cast_info = []
     for c in state.get("cast", []):
@@ -2668,6 +2729,16 @@ def api_expand_all(project_id: str):
             if duration > 5.0:
                 print(f"[WARN] Shot {shot_id} is {duration:.1f}s (>5s recommended)")
             
+            # v1.6.5: Resolve cast names/ids to valid cast_ids
+            resolved_cast = []
+            for cid in (sh.get("cast") or []):
+                cid_lower = str(cid).lower().strip()
+                if cid_lower in name_to_id:
+                    resolved_id = name_to_id[cid_lower]
+                    if resolved_id not in resolved_cast:
+                        resolved_cast.append(resolved_id)
+                        print(f"[INFO] Including cast name in prompt: {cid}")
+
             all_shots.append({
                 "shot_id": shot_id,
                 "sequence_id": seq["sequence_id"],
@@ -2675,7 +2746,7 @@ def api_expand_all(project_id: str):
                 "end": end,
                 "structure_type": normalize_structure_type(sh.get("structure_type", seq.get("structure_type","verse"))),
                 "energy": float(clamp(safe_float(sh.get("energy", seq.get("energy",0.5))), 0.0, 1.0)),
-                "cast": [cid for cid in (sh.get("cast") or []) if cid in valid_cast],
+                "cast": resolved_cast,
                 "intent": (sh.get("intent") or "").strip(),
                 "camera_language": (sh.get("camera_language") or "").strip(),
                 "environment": (sh.get("environment") or "").strip(),
@@ -2705,7 +2776,15 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
     duration_sec = float(meta.get("duration_sec") or 180.0)
     valid_cast = {c["cast_id"] for c in state.get("cast", []) if c.get("cast_id")}
     style = state["project"]["style_preset"]
-    
+
+    # v1.6.5: Build name-to-id mapping for resolving LLM responses that use names instead of IDs
+    name_to_id = {}
+    for c in state.get("cast", []):
+        if c.get("name"):
+            name_to_id[c["name"].lower().strip()] = c["cast_id"]
+        if c.get("cast_id"):
+            name_to_id[c["cast_id"].lower()] = c["cast_id"]
+
     # v1.5.3: Build cast info with roles and impact
     cast_info = []
     for c in state.get("cast", []):
@@ -2747,12 +2826,22 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
         shot_id = sh.get("shot_id") or f"{seq_id}_sh{j:02d}"
         start = safe_float(sh.get("start", seq["start"]))
         end = safe_float(sh.get("end", seq["end"]))
-        
+
         # v1.5.3: Warn about long shots
         duration = end - start
         if duration > 5.0:
             print(f"[WARN] Shot {shot_id} is {duration:.1f}s (>5s recommended)")
-        
+
+        # v1.6.5: Resolve cast names/ids to valid cast_ids
+        resolved_cast = []
+        for cid in (sh.get("cast") or []):
+            cid_lower = str(cid).lower().strip()
+            if cid_lower in name_to_id:
+                resolved_id = name_to_id[cid_lower]
+                if resolved_id not in resolved_cast:
+                    resolved_cast.append(resolved_id)
+                    print(f"[INFO] Including cast name in prompt: {cid}")
+
         all_shots.append({
             "shot_id": shot_id,
             "sequence_id": seq_id,
@@ -2760,7 +2849,7 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
             "end": end,
             "structure_type": normalize_structure_type(sh.get("structure_type", seq.get("structure_type","verse"))),
             "energy": float(clamp(safe_float(sh.get("energy", seq.get("energy",0.5))), 0.0, 1.0)),
-            "cast": [cid for cid in (sh.get("cast") or []) if cid in valid_cast],
+            "cast": resolved_cast,
             "intent": (sh.get("intent") or "").strip(),
             "camera_language": (sh.get("camera_language") or "").strip(),
             "environment": (sh.get("environment") or "").strip(),
@@ -2802,10 +2891,14 @@ def api_tighten(project_id: str):
 
 # ========= API: Render shot =========
 @app.post("/api/project/{project_id}/shot/{shot_id}/render")
-def api_render_shot(project_id: str, shot_id: str):
+def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = None):
     """v1.4: Render shot using img2img with scene decor + cast reference images (both A and B), save locally."""
     state = load_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
+
+    # v1.6.5: Get optional negative prompt override
+    payload = payload or {}
+    negative_prompt_override = payload.get("negative_prompt", "").strip()
 
     shots = state.get("storyboard", {}).get("shots", [])
     shot = next((s for s in shots if s.get("shot_id")==shot_id), None)
@@ -2815,6 +2908,11 @@ def api_render_shot(project_id: str, shot_id: str):
     prompt = build_prompt(state, shot)
     aspect = state["project"]["aspect"]
     print(f"[INFO] Rendering shot {shot_id}: aspect={aspect}")
+
+    # v1.6.5: Apply negative prompt override if provided
+    if negative_prompt_override:
+        prompt = f"{prompt}, {negative_prompt_override}"
+        print(f"[INFO] Using negative prompt override: {negative_prompt_override[:50]}...")
     
     # v1.4: Add cast prompt_extra to the prompt (can be overridden by scene wardrobe)
     cast_ids = shot.get("cast") or []

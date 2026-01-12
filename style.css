@@ -1727,6 +1727,162 @@ button.tiny {
   color: var(--accent);
 }
 
+/* v1.6.5: Scene popup - 3 preview boxes layout */
+.scene-popup-previews {
+  display: flex;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.scene-preview-box {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-dark);
+}
+
+.scene-preview-box .preview-label {
+  display: block;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.scene-preview-box .preview-image-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: var(--bg-darker);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.scene-preview-box .preview-image-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  cursor: pointer;
+}
+
+.scene-preview-box .preview-empty {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.scene-preview-box .preview-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.scene-preview-box .preview-prompt {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-dark);
+  color: var(--text);
+  font-size: 11px;
+}
+
+.scene-preview-box .preview-prompt:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scene-preview-box .preview-action-btn {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.scene-preview-box .preview-action-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.scene-preview-box .preview-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* v1.6.5: Make popup wider for 3 boxes */
+.popup-content-scene {
+  max-width: 950px;
+}
+
+/* v1.6.5: Collapsible section headers */
+.section-header.collapsible {
+  cursor: pointer;
+}
+
+.section-header.collapsible:hover {
+  color: var(--accent);
+}
+
+.section-header.collapsible::before {
+  content: "▼ ";
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.section-header.collapsible.collapsed::before {
+  content: "▶ ";
+}
+
+/* v1.6.5: Stop button for render queue */
+.stop-btn {
+  padding: 6px 12px;
+  border: 1px solid #ef4444;
+  border-radius: 4px;
+  background: transparent;
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stop-btn:hover {
+  background: #ef4444;
+  color: white;
+}
+
+/* v1.6.5: Negative prompt input */
+.negative-prompt-input {
+  flex: 1;
+  max-width: 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-dark);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.negative-prompt-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.negative-prompt-input::placeholder {
+  color: var(--text-dim);
+}
+
 .popup-content h3 {
   margin: 0 0 16px 0;
   font-size: 14px;

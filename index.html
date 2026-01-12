@@ -2,7 +2,7 @@
 <html><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Fré Pathé VIDEO TOOLS 1.6.3</title>
+<title>Fré Pathé VIDEO TOOLS 1.6.5</title>
 <link rel="stylesheet" href="/static/style.css"></head>
 <body>
 
@@ -13,7 +13,7 @@
 <header class="header">
   <div class="logo-wrap">
     <img src="/static/logo.png" alt="Fré Pathé" class="logo-img"/>
-    <span class="version">v1.6.3</span>
+    <span class="version">v1.6.5</span>
   </div>
 </header>
 
@@ -226,9 +226,11 @@
   <div class="subsection">
     <div class="section-header">
       <h3>Shots <span id="shotsCount" class="count-badge">0</span></h3>
-      <div style="display:flex;gap:8px;">
+      <div style="display:flex;gap:8px;align-items:center;">
         <button class="small" onclick="refreshFromServer()" title="Refresh from server">⟳</button>
         <button class="accent-btn" onclick="renderAllShots()" id="renderAllShotsBtn">RENDER ALL</button>
+        <button class="stop-btn hidden" onclick="stopRenderQueue()" id="stopRenderBtn" title="Stop rendering">STOP</button>
+        <input type="text" id="negativePromptInput" placeholder="Negative prompt..." class="negative-prompt-input" title="Override negative prompt for all renders"/>
       </div>
     </div>
     <div id="shotsGrid" class="shots-grid"></div>
@@ -282,41 +284,51 @@
   </div>
 </div>
 
-<!-- v1.5.3: Scene popup -->
+<!-- v1.5.3: Scene popup - v1.6.5: Updated to show all 3 previews -->
 <div id="scenePopup" class="popup hidden" onclick="hidePopup('scenePopup')">
   <div class="popup-content-scene" onclick="event.stopPropagation()">
     <button class="popup-close" onclick="hidePopup('scenePopup')">✕</button>
-    <div class="scene-popup-layout">
-      <div class="scene-popup-images">
-        <div class="scene-popup-image-main">
+    <h3 id="scenePopupTitle">Scene</h3>
+    <p id="scenePopupPrompt" class="scene-popup-prompt"></p>
+
+    <!-- v1.6.5: Three preview boxes side by side -->
+    <div class="scene-popup-previews">
+      <div class="scene-preview-box" id="sceneDecor1Box">
+        <span class="preview-label">DECOR 1 (MAIN)</span>
+        <div class="preview-image-wrap">
           <img id="scenePopupImage" src=""/>
           <span id="scenePopupDecorLock" class="scene-lock-badge hidden" title="Decor locked"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/></svg></span>
         </div>
-        <div id="scenePopupImageAlt" class="scene-popup-image-alt hidden">
-          <img id="scenePopupImageAltImg" src=""/>
-          <span class="alt-label">ALT</span>
+        <div class="preview-actions">
+          <input type="text" id="sceneDecor1Prompt" placeholder="Edit prompt..." class="preview-prompt"/>
+          <button id="sceneDecor1Rerender" class="preview-action-btn" title="Re-render">↻</button>
+          <button id="sceneDecor1Lock" class="preview-action-btn" title="Lock decor">🔒</button>
         </div>
       </div>
-      <div class="scene-popup-info">
-        <h3 id="scenePopupTitle">Scene</h3>
-        <p id="scenePopupPrompt" class="scene-popup-prompt"></p>
-        
-        <!-- v1.6.3: Reprompter moved from card -->
-        <div id="scenePopupReprompter" class="scene-popup-reprompter">
-          <label class="field-label">Edit Scene</label>
-          <div class="scene-reprompter-row">
-            <input type="text" id="sceneRepromptInput" placeholder="Describe changes..."/>
-            <button id="sceneRepromptBtn" class="accent-btn" title="Apply edit">→</button>
-            <button id="sceneRerenderBtn" class="scene-rerender-popup-btn" title="Re-render">↻</button>
-          </div>
+
+      <div class="scene-preview-box" id="sceneDecor2Box">
+        <span class="preview-label">DECOR 2 (ALT)</span>
+        <div class="preview-image-wrap">
+          <img id="scenePopupImageAltImg" src=""/>
         </div>
-        
-        <!-- v1.6.3: Decor lock -->
-        <div class="scene-lock-row">
-          <button id="sceneDecorLockBtn" class="lock-btn" title="Lock decor">Lock Decor</button>
+        <div class="preview-actions">
+          <input type="text" id="sceneDecor2Prompt" placeholder="Alt decor prompt..." class="preview-prompt"/>
+          <button id="sceneDecor2Rerender" class="preview-action-btn" title="Generate alt">↻</button>
+          <button id="sceneDecor2Lock" class="preview-action-btn hidden" title="Lock alt">🔒</button>
         </div>
-        
-        <div id="scenePopupWardrobe" class="scene-popup-wardrobe"></div>
+      </div>
+
+      <div class="scene-preview-box" id="sceneWardrobeBox">
+        <span class="preview-label">WARDROBE PREVIEW</span>
+        <div class="preview-image-wrap">
+          <img id="sceneWardrobePreviewImg" src=""/>
+          <span id="sceneWardrobeEmpty" class="preview-empty">No wardrobe set</span>
+        </div>
+        <div class="preview-actions">
+          <input type="text" id="sceneWardrobeInput" placeholder="Disheveled domestic wear: lead in..." class="preview-prompt"/>
+          <button id="sceneWardrobeGenerate" class="preview-action-btn" title="Generate preview">→</button>
+          <button id="sceneWardrobeLock" class="preview-action-btn" title="Lock wardrobe">🔒</button>
+        </div>
       </div>
     </div>
   </div>

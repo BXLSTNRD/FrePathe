@@ -1,4 +1,4 @@
-// BXLSTNRD Video Studio v1.6.3
+// BXLSTNRD Video Studio v1.6.5
 
 const DEFAULT_AUDIO_PROMPT = `Analyze this audio and return ONLY a JSON object with this exact structure (no markdown, no prose):
 {
@@ -408,18 +408,27 @@ function updateButtonStates() {
   
   // v1.6.3: Storyboard buttons require both audio AND cast locked
   const bothLocked = audioLocked && castLocked;
-  
+
   const createBtn = document.getElementById("createTimelineBtn");
   const allShotsBtn = document.getElementById("allShotsBtn");
-  
+  const renderAllBtn = document.getElementById("renderAllShotsBtn");
+
   if (createBtn) {
     createBtn.disabled = !bothLocked;
     createBtn.title = !audioLoaded ? "Import audio first" : (!audioLocked ? "Lock audio first" : (!castLocked ? "Lock cast first" : ""));
     console.log(`[ButtonStates] CREATE TIMELINE disabled=${!bothLocked}`);
   }
-  
+
   if (allShotsBtn) {
-    allShotsBtn.disabled = scenes.length === 0;
+    // v1.6.5: Also require both locked for All Shots
+    allShotsBtn.disabled = !bothLocked || scenes.length === 0;
+    allShotsBtn.title = !bothLocked ? "Lock audio and cast first" : "";
+  }
+
+  // v1.6.5: Render All also requires both locked
+  if (renderAllBtn) {
+    renderAllBtn.disabled = !bothLocked;
+    renderAllBtn.title = !bothLocked ? "Lock audio and cast first" : "";
   }
   
   // v1.6.3: Collapsible sections - manual toggle
@@ -428,27 +437,40 @@ function updateButtonStates() {
 
 // v1.6.3: Track manual collapse state
 const COLLAPSED_SECTIONS = new Set();
-let AUTO_COLLAPSED = false; // Track if we auto-collapsed
+// v1.6.5: Track which sections have been auto-collapsed (to avoid repeated auto-collapse)
+const AUTO_COLLAPSED_SECTIONS = new Set();
 
-// v1.6.3: Update collapsible sections - auto-collapse when BOTH locked, manual toggle always works
+// v1.6.5: Update collapsible sections - auto-collapse when individually locked, manual toggle always works
 function updateCollapsibleSections() {
   const audioLocked = PROJECT_STATE?.project?.audio_locked;
   const castLocked = PROJECT_STATE?.project?.cast_locked;
-  const bothLocked = audioLocked && castLocked;
-  
-  // Auto-collapse both sections when BOTH are locked (only once)
-  if (bothLocked && !AUTO_COLLAPSED) {
+
+  // v1.6.5: Auto-collapse audio section when audio is locked (only once per lock)
+  if (audioLocked && !AUTO_COLLAPSED_SECTIONS.has("section-audio")) {
     COLLAPSED_SECTIONS.add("section-audio");
-    COLLAPSED_SECTIONS.add("section-cast");
-    AUTO_COLLAPSED = true;
+    AUTO_COLLAPSED_SECTIONS.add("section-audio");
   }
-  
+  // If unlocked, clear auto-collapse tracking so it can auto-collapse again if re-locked
+  if (!audioLocked) {
+    AUTO_COLLAPSED_SECTIONS.delete("section-audio");
+  }
+
+  // v1.6.5: Auto-collapse cast section when cast is locked (only once per lock)
+  if (castLocked && !AUTO_COLLAPSED_SECTIONS.has("section-cast")) {
+    COLLAPSED_SECTIONS.add("section-cast");
+    AUTO_COLLAPSED_SECTIONS.add("section-cast");
+  }
+  // If unlocked, clear auto-collapse tracking so it can auto-collapse again if re-locked
+  if (!castLocked) {
+    AUTO_COLLAPSED_SECTIONS.delete("section-cast");
+  }
+
   // Audio section
   const audioSection = document.getElementById("section-audio");
   if (audioSection) {
     const audioContent = audioSection.querySelector(".module-content");
     const isCollapsed = COLLAPSED_SECTIONS.has("section-audio");
-    
+
     if (isCollapsed) {
       audioSection.classList.add("collapsed");
       if (audioContent) audioContent.style.display = "none";
@@ -457,19 +479,71 @@ function updateCollapsibleSections() {
       if (audioContent) audioContent.style.display = "";
     }
   }
-  
+
   // Cast section
   const castSection = document.getElementById("section-cast");
   if (castSection) {
     const castContent = castSection.querySelector(".module-content");
     const isCollapsed = COLLAPSED_SECTIONS.has("section-cast");
-    
+
     if (isCollapsed) {
       castSection.classList.add("collapsed");
       if (castContent) castContent.style.display = "none";
     } else {
       castSection.classList.remove("collapsed");
       if (castContent) castContent.style.display = "";
+    }
+  }
+
+  // v1.6.5: Timeline section - auto-collapse when all decors and wardrobes are locked
+  const scenes = PROJECT_STATE?.cast_matrix?.scenes || [];
+  const allDecorsLocked = scenes.length > 0 && scenes.every(s => s.decor_locked);
+  const allWardrobesLocked = scenes.length > 0 && scenes.every(s => s.wardrobe_locked || !s.wardrobe);
+
+  if (allDecorsLocked && allWardrobesLocked && !AUTO_COLLAPSED_SECTIONS.has("section-timeline")) {
+    COLLAPSED_SECTIONS.add("section-timeline");
+    AUTO_COLLAPSED_SECTIONS.add("section-timeline");
+  }
+  // If any decor/wardrobe is unlocked, allow re-collapse next time
+  if (!allDecorsLocked || !allWardrobesLocked) {
+    AUTO_COLLAPSED_SECTIONS.delete("section-timeline");
+  }
+
+  // Apply timeline collapse
+  const timelineContainer = document.getElementById("timelineContainer");
+  const timelineHeader = document.querySelector(".subsection .section-header");
+  if (timelineContainer) {
+    const isTimelineCollapsed = COLLAPSED_SECTIONS.has("section-timeline");
+    timelineContainer.style.display = isTimelineCollapsed ? "none" : "";
+    // Add visual indicator for collapsible state
+    if (timelineHeader && allDecorsLocked && allWardrobesLocked) {
+      timelineHeader.classList.add("collapsible");
+      timelineHeader.onclick = () => toggleSectionCollapse("section-timeline");
+    }
+  }
+
+  // v1.6.5: Shots section - auto-collapse when all shots are rendered
+  const shots = PROJECT_STATE?.storyboard?.shots || [];
+  const allShotsRendered = shots.length > 0 && shots.every(s => s.render?.image_url);
+
+  if (allShotsRendered && !AUTO_COLLAPSED_SECTIONS.has("section-shots")) {
+    COLLAPSED_SECTIONS.add("section-shots");
+    AUTO_COLLAPSED_SECTIONS.add("section-shots");
+  }
+  if (!allShotsRendered) {
+    AUTO_COLLAPSED_SECTIONS.delete("section-shots");
+  }
+
+  // Apply shots collapse
+  const shotsGrid = document.getElementById("shotsGrid");
+  const shotsHeader = document.querySelector(".subsection:last-child .section-header");
+  if (shotsGrid) {
+    const isShotsCollapsed = COLLAPSED_SECTIONS.has("section-shots");
+    shotsGrid.style.display = isShotsCollapsed ? "none" : "";
+    // Add visual indicator for collapsible state
+    if (shotsHeader && allShotsRendered) {
+      shotsHeader.classList.add("collapsible");
+      shotsHeader.onclick = () => toggleSectionCollapse("section-shots");
     }
   }
 }
@@ -1217,10 +1291,13 @@ function updateCastLockUI(isLocked) {
   updateButtonStates();
 }
 
-// v1.6.3: Style lock UI
+/// v1.6.3: Style lock UI
+// v1.6.5: Badge is hidden when actively used (during rendering)
 function updateStyleLockUI(isLocked) {
   const badge = document.getElementById("styleLockBadge");
-  if (isLocked) {
+  // v1.6.5: Hide badge when style lock is in use (it's redundant when active)
+  // The badge is informational, so hide it when style lock is set to reduce visual clutter
+  if (isLocked && ACTIVE_RENDERS === 0) {
     badge?.classList.remove("hidden");
   } else {
     badge?.classList.add("hidden");
@@ -1593,91 +1670,177 @@ function selectSequence(seqId) {
   updateButtonStates();
 }
 
-// v1.6.3: Show scene details popup with reprompter and locks
+// v1.6.5: Show scene details popup with 3 preview boxes
 function showScenePopup(sceneId) {
   const scenes = PROJECT_STATE?.cast_matrix?.scenes || [];
   const scene = scenes.find(s => s.scene_id === sceneId);
   if (!scene) return;
-  
+
   const thumb = scene.decor_refs?.[0] || "";
   const thumbAlt = scene.decor_alt || "";
+  const wardrobeRef = scene.wardrobe_ref || "";
   const title = scene.title || 'Untitled Scene';
   const prompt = scene.prompt || scene.description || 'No description';
   const wardrobe = scene.wardrobe || '';
   const decorLocked = scene.decor_locked || false;
   const wardrobeLocked = scene.wardrobe_locked || false;
-  
+
+  // Set title and prompt
   document.getElementById("scenePopupTitle").textContent = title;
   document.getElementById("scenePopupPrompt").textContent = prompt;
-  
-  // Main image (1:1 display via CSS)
+
+  // DECOR 1 (MAIN) - Main image
   const img = document.getElementById("scenePopupImage");
-  if (thumb) {
-    img.src = thumb;
-    img.style.display = "block";
-  } else {
-    img.style.display = "none";
+  if (img) {
+    if (thumb) {
+      img.src = thumb;
+      img.style.display = "block";
+      img.onclick = () => showImagePopup(thumb);
+    } else {
+      img.style.display = "none";
+    }
   }
-  
+
   // Decor lock badge
   const decorLockBadge = document.getElementById("scenePopupDecorLock");
   if (decorLockBadge) {
     decorLockBadge.classList.toggle("hidden", !decorLocked);
   }
-  
-  // Alt decor image
-  const altContainer = document.getElementById("scenePopupImageAlt");
-  const altImg = document.getElementById("scenePopupImageAltImg");
-  if (altContainer && altImg) {
-    if (thumbAlt) {
-      altImg.src = thumbAlt;
-      altContainer.classList.remove("hidden");
-    } else {
-      altContainer.classList.add("hidden");
-    }
-  }
-  
-  // v1.6.3: Reprompter bindings
-  const repromptInput = document.getElementById("sceneRepromptInput");
-  const repromptBtn = document.getElementById("sceneRepromptBtn");
-  const rerenderBtn = document.getElementById("sceneRerenderBtn");
-  
-  if (repromptInput) {
-    repromptInput.value = "";
-    repromptInput.onkeydown = (e) => {
-      if (e.key === 'Enter') editSceneWithPrompt(sceneId, repromptInput.value);
+
+  // DECOR 1 controls
+  const decor1Prompt = document.getElementById("sceneDecor1Prompt");
+  const decor1Rerender = document.getElementById("sceneDecor1Rerender");
+  const decor1Lock = document.getElementById("sceneDecor1Lock");
+
+  if (decor1Prompt) {
+    decor1Prompt.value = "";
+    decor1Prompt.disabled = decorLocked;
+    decor1Prompt.onkeydown = (e) => {
+      if (e.key === 'Enter') editSceneWithPrompt(sceneId, decor1Prompt.value);
     };
   }
-  if (repromptBtn) {
-    repromptBtn.onclick = () => editSceneWithPrompt(sceneId, repromptInput?.value || "");
+  if (decor1Rerender) {
+    decor1Rerender.onclick = () => decor1Prompt?.value ? editSceneWithPrompt(sceneId, decor1Prompt.value) : rerenderScene(sceneId);
+    decor1Rerender.disabled = decorLocked;
   }
-  if (rerenderBtn) {
-    rerenderBtn.onclick = () => rerenderScene(sceneId);
-    rerenderBtn.disabled = decorLocked;
+  if (decor1Lock) {
+    decor1Lock.textContent = decorLocked ? "🔓" : "🔒";
+    decor1Lock.title = decorLocked ? "Unlock decor" : "Lock decor";
+    decor1Lock.onclick = () => toggleSceneDecorLock(sceneId);
   }
-  
-  // v1.6.3: Decor lock button
-  const decorLockBtn = document.getElementById("sceneDecorLockBtn");
-  if (decorLockBtn) {
-    decorLockBtn.textContent = decorLocked ? "Unlock Decor" : "Lock Decor";
-    decorLockBtn.onclick = () => toggleSceneDecorLock(sceneId);
+
+  // DECOR 2 (ALT) - Alt image
+  const altImg = document.getElementById("scenePopupImageAltImg");
+  if (altImg) {
+    if (thumbAlt) {
+      altImg.src = thumbAlt;
+      altImg.style.display = "block";
+      altImg.onclick = () => showImagePopup(thumbAlt);
+    } else {
+      altImg.style.display = "none";
+    }
   }
-  
-  // v1.6.3: Show wardrobe with lock
-  const wardrobeContainer = document.getElementById("scenePopupWardrobe");
-  if (wardrobeContainer) {
-    wardrobeContainer.innerHTML = `
-      <label class="field-label">Wardrobe (overrides cast default) ${wardrobeLocked ? '<svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="vertical-align:middle"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/></svg>' : ''}</label>
-      <input type="text" id="sceneWardrobeInput" value="${wardrobe.replace(/"/g, '&quot;')}" placeholder="e.g. elegant evening gown, tuxedo..." ${wardrobeLocked ? 'disabled' : ''} style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-dark); color: var(--text);"/>
-      <div class="wardrobe-btn-row" style="margin-top: 8px; display: flex; gap: 8px;">
-        <button onclick="updateSceneWardrobe('${sceneId}')" class="accent-btn" ${wardrobeLocked ? 'disabled' : ''}>Save Wardrobe</button>
-        <button onclick="toggleSceneWardrobeLock('${sceneId}')" class="lock-btn">${wardrobeLocked ? 'Unlock' : 'Lock'}</button>
-        ${wardrobe && !wardrobeLocked ? `<button onclick="generateWardrobeRef('${sceneId}')" class="accent-btn" title="Generate wardrobe preview">Preview</button>` : ''}
-      </div>
-    `;
+
+  // DECOR 2 controls
+  const decor2Prompt = document.getElementById("sceneDecor2Prompt");
+  const decor2Rerender = document.getElementById("sceneDecor2Rerender");
+
+  if (decor2Prompt) {
+    decor2Prompt.value = "";
+    decor2Prompt.onkeydown = (e) => {
+      if (e.key === 'Enter') generateAltDecor(sceneId, decor2Prompt.value);
+    };
   }
-  
+  if (decor2Rerender) {
+    decor2Rerender.onclick = () => generateAltDecor(sceneId, decor2Prompt?.value || "");
+  }
+
+  // WARDROBE PREVIEW
+  const wardrobeImg = document.getElementById("sceneWardrobePreviewImg");
+  const wardrobeEmpty = document.getElementById("sceneWardrobeEmpty");
+
+  if (wardrobeImg && wardrobeEmpty) {
+    if (wardrobeRef) {
+      wardrobeImg.src = wardrobeRef;
+      wardrobeImg.style.display = "block";
+      wardrobeImg.onclick = () => showImagePopup(wardrobeRef);
+      wardrobeEmpty.style.display = "none";
+    } else {
+      wardrobeImg.style.display = "none";
+      wardrobeEmpty.style.display = "block";
+    }
+  }
+
+  // WARDROBE controls
+  const wardrobeInput = document.getElementById("sceneWardrobeInput");
+  const wardrobeGenerate = document.getElementById("sceneWardrobeGenerate");
+  const wardrobeLockBtn = document.getElementById("sceneWardrobeLock");
+
+  if (wardrobeInput) {
+    wardrobeInput.value = wardrobe;
+    wardrobeInput.disabled = wardrobeLocked;
+    wardrobeInput.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        updateSceneWardrobeAndGenerate(sceneId, wardrobeInput.value);
+      }
+    };
+  }
+  if (wardrobeGenerate) {
+    wardrobeGenerate.onclick = () => updateSceneWardrobeAndGenerate(sceneId, wardrobeInput?.value || "");
+    wardrobeGenerate.disabled = wardrobeLocked;
+  }
+  if (wardrobeLockBtn) {
+    wardrobeLockBtn.textContent = wardrobeLocked ? "🔓" : "🔒";
+    wardrobeLockBtn.title = wardrobeLocked ? "Unlock wardrobe" : "Lock wardrobe";
+    wardrobeLockBtn.onclick = () => toggleSceneWardrobeLock(sceneId);
+  }
+
   document.getElementById("scenePopup").classList.remove("hidden");
+}
+
+// v1.6.5: Update wardrobe and generate preview in one step
+async function updateSceneWardrobeAndGenerate(sceneId, wardrobeText) {
+  if (!wardrobeText?.trim()) {
+    showError("Enter wardrobe description first");
+    return;
+  }
+
+  try {
+    // First update the wardrobe text
+    await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/wardrobe`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wardrobe: wardrobeText.trim() })
+    });
+
+    // Update local state
+    const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
+    if (scene) scene.wardrobe = wardrobeText.trim();
+
+    // Then generate the preview
+    await generateWardrobeRef(sceneId);
+  } catch (e) {
+    showError("Failed to update wardrobe: " + e.message);
+  }
+}
+
+// v1.6.5: Generate alt decor image
+async function generateAltDecor(sceneId, altPrompt) {
+  try {
+    setStatus("Generating alt decor...", null, "storyboardStatus");
+
+    await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/decor_alt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: altPrompt || "" })
+    });
+
+    await refreshFromServer();
+    setStatus("Alt decor generated", 100, "storyboardStatus");
+    showScenePopup(sceneId);
+  } catch (e) {
+    showError("Failed to generate alt decor: " + e.message);
+  }
 }
 
 // v1.6.3: Update scene wardrobe
@@ -2064,22 +2227,32 @@ async function submitShotEdit() {
   }
 }
 
+// v1.6.5: Flag to stop render queue
+let RENDER_STOPPED = false;
+// v1.6.5: Global negative prompt override
+let NEGATIVE_PROMPT_OVERRIDE = "";
+
 async function renderAllShots() {
   try {
     const allShots = PROJECT_STATE?.storyboard?.shots || [];
-    const shotsToRender = SELECTED_SEQUENCE_ID 
+    const shotsToRender = SELECTED_SEQUENCE_ID
       ? allShots.filter(s => s.sequence_id === SELECTED_SEQUENCE_ID && !s.render?.image_url)
       : allShots.filter(s => !s.render?.image_url);
-    
+
     if (!shotsToRender.length) {
       setStatus("All shots already rendered", 100, "storyboardStatus");
       return;
     }
-    
+
+    // v1.6.5: Get negative prompt override if provided
+    const negPromptInput = document.getElementById("negativePromptInput");
+    NEGATIVE_PROMPT_OVERRIDE = negPromptInput?.value?.trim() || "";
+
     // v1.5.4: Track total for progress
     TOTAL_QUEUED = shotsToRender.length;
     COMPLETED_COUNT = 0;
-    
+    RENDER_STOPPED = false;
+
     // v1.5: Add all shots to queue
     shotsToRender.forEach(sh => {
       const item = {type: "shot", id: sh.shot_id};
@@ -2087,10 +2260,17 @@ async function renderAllShots() {
         RENDER_QUEUE.push(item);
       }
     });
-    
+
     setStatus(`Queued ${shotsToRender.length} shots…`, null, "storyboardStatus");
+
+    // v1.6.5: Show stop button, hide render all
+    const stopBtn = document.getElementById("stopRenderBtn");
+    const renderAllBtn = document.getElementById("renderAllShotsBtn");
+    if (stopBtn) stopBtn.classList.remove("hidden");
+    if (renderAllBtn) renderAllBtn.classList.add("hidden");
+
     renderShots(PROJECT_STATE);  // Update UI to show queue status
-    
+
     // Start processing
     processRenderQueue();
   } catch (e) {
@@ -2098,39 +2278,70 @@ async function renderAllShots() {
   }
 }
 
+// v1.6.5: Stop the render queue
+function stopRenderQueue() {
+  RENDER_STOPPED = true;
+  RENDER_QUEUE.length = 0;  // Clear queue
+  setStatus("Rendering stopped", 100, "storyboardStatus");
+
+  // v1.6.5: Hide stop button, show render all
+  const stopBtn = document.getElementById("stopRenderBtn");
+  const renderAllBtn = document.getElementById("renderAllShotsBtn");
+  if (stopBtn) stopBtn.classList.add("hidden");
+  if (renderAllBtn) renderAllBtn.classList.remove("hidden");
+
+  // Refresh to show current state
+  renderShots(PROJECT_STATE);
+}
+
 // v1.5.4: Unified queue processor for shots, scenes, and cast refs
 let TOTAL_QUEUED = 0;  // Track total for progress
 let COMPLETED_COUNT = 0;
 
 async function processRenderQueue() {
-  while (RENDER_QUEUE.length > 0 && ACTIVE_RENDERS < MAX_CONCURRENT) {
+  // v1.6.5: Check if stopped
+  if (RENDER_STOPPED) {
+    return;
+  }
+
+  while (RENDER_QUEUE.length > 0 && ACTIVE_RENDERS < MAX_CONCURRENT && !RENDER_STOPPED) {
     const item = RENDER_QUEUE.shift();
     ACTIVE_RENDERS++;
-    
+
     // Update UI
     updateRenderStatus(item.type, item.id, "rendering");
     const remaining = RENDER_QUEUE.length;
     const done = COMPLETED_COUNT;
     const total = TOTAL_QUEUED;
-    
+
     // v1.5.4: More detailed status with item identifier
     const displayId = item.id.replace(/seq_(\d+)/, 'sc$1');
     setStatus(`Rendering ${displayId} (${done + ACTIVE_RENDERS}/${total})…`, null, "storyboardStatus");
-    
+
     // Start render (don't await - let it run in parallel)
     renderItemAsync(item).finally(() => {
       ACTIVE_RENDERS--;
       COMPLETED_COUNT++;
-      // Process more from queue
-      processRenderQueue();
+      // Process more from queue if not stopped
+      if (!RENDER_STOPPED) {
+        processRenderQueue();
+      }
     });
   }
-  
+
   // Check if all done
   if (RENDER_QUEUE.length === 0 && ACTIVE_RENDERS === 0) {
     setStatus(`Rendered ${COMPLETED_COUNT} items`, 100, "storyboardStatus");
     TOTAL_QUEUED = 0;
     COMPLETED_COUNT = 0;
+    NEGATIVE_PROMPT_OVERRIDE = "";
+
+    // v1.6.5: Hide stop button, show render all
+    const stopBtn = document.getElementById("stopRenderBtn");
+    const renderAllBtn = document.getElementById("renderAllShotsBtn");
+    if (stopBtn) stopBtn.classList.add("hidden");
+    if (renderAllBtn) renderAllBtn.classList.remove("hidden");
+
     await refreshFromServer();
   }
 }
@@ -2139,7 +2350,13 @@ async function processRenderQueue() {
 async function renderItemAsync(item) {
   try {
     if (item.type === "shot") {
-      const result = await apiCall(`/api/project/${pid()}/shot/${item.id}/render`, { method: "POST" });
+      // v1.6.5: Include negative prompt override if set
+      const options = { method: "POST" };
+      if (NEGATIVE_PROMPT_OVERRIDE) {
+        options.headers = { "Content-Type": "application/json" };
+        options.body = JSON.stringify({ negative_prompt: NEGATIVE_PROMPT_OVERRIDE });
+      }
+      const result = await apiCall(`/api/project/${pid()}/shot/${item.id}/render`, options);
       // v1.5.3: Update shot card with rendered image
       if (result?.image_url) {
         updateShotCardImage(item.id, result.image_url);
@@ -2172,17 +2389,44 @@ async function renderItemAsync(item) {
 }
 
 // v1.5.3: Update shot card with rendered image
+// v1.6.5: Also update PROJECT_STATE to prevent loss on re-render
 function updateShotCardImage(shotId, imageUrl) {
   const card = document.querySelector(`.shot-card[data-shot-id="${shotId}"]`);
   if (!card) return;
-  
+
   const container = card.querySelector('.shot-render-container');
   if (!container) return;
-  
+
+  // v1.6.5: Update PROJECT_STATE so the image persists through re-renders
+  const shots = PROJECT_STATE?.storyboard?.shots || [];
+  const shot = shots.find(s => s.shot_id === shotId);
+  if (shot) {
+    shot.render = shot.render || {};
+    shot.render.image_url = imageUrl;
+    shot.render.status = "done";
+  }
+
+  // Also add the edit row if not present
   container.innerHTML = `
     <img class="shot-render-img" src="${imageUrl}" onclick="showImagePopup('${imageUrl}')"/>
-    <button class="rerender-btn" onclick="renderShot('${shotId}')" title="Re-render">↻</button>
+    <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${shotId}')" title="Re-render">↻</button>
   `;
+
+  // v1.6.5: Add the edit row below the render if not present
+  const existingEditRow = card.querySelector('.shot-edit-row');
+  if (!existingEditRow) {
+    const body = card.querySelector('.shot-card-body');
+    if (body) {
+      const editRow = document.createElement('div');
+      editRow.className = 'shot-edit-row';
+      editRow.innerHTML = `
+        <input type="text" class="shot-edit-input" placeholder="Edit prompt..." data-shot-id="${shotId}" onkeydown="if(event.key==='Enter')quickEditShot('${shotId}', this.value)"/>
+        <button class="shot-ref-btn" onclick="openShotRefPicker('${shotId}')" title="Add reference">+</button>
+        <button class="shot-edit-go" onclick="quickEditShot('${shotId}', this.parentElement.querySelector('input').value)" title="Apply edit">→</button>
+      `;
+      body.appendChild(editRow);
+    }
+  }
 }
 
 // v1.5.3: Update UI status for any render type

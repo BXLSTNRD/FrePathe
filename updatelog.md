@@ -1,3 +1,13 @@
+## v1.6.5 -> v1.6.6 ✅ DONE
+
+Bugs fixed:
+    - ✅ Audio Expert persistence: Checkbox wordt nu correct hersteld bij page reload
+    - ✅ Scene renders: Wardrobe preview wordt nu automatisch gegenereerd als scene een wardrobe heeft
+    - ✅ Shot card UI: Enter-knop en + knop werken weer correct
+    - ✅ Collapsible sections: Timeline en Shots kunnen nu ook handmatig open/dicht
+
+---
+
 ## v1.6.0 -> v1.6.1
 
 Titelmodule:

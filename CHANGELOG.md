@@ -1,6 +1,134 @@
 # Changelog
 
-## v1.6.5 (2025-01-13) - STABILITY & CACHE FIX
+## v1.7.0-BROKEN (2026-01-13) - AFGEBROKEN SESSIE
+
+### ⚠️ STATUS: NIET PRODUCTIERIJP
+Deze versie bevat onvoltooide wijzigingen en bekende bugs. Niet deployen.
+
+### Poging tot fixes (onvoltooid)
+- Cast ref selectie: ref_a vs ref_b gebaseerd op `camera_language` (close-up → ref_b)
+- Style lock prompt: instructie toegevoegd om stijl te kopiëren, niet de persoon
+- Cost tracking: `note` parameter toegevoegd aan `track_cost()`
+- Cast cards: `updateCastCardRefs()` voor incrementele updates
+- FFmpeg: debug logging toegevoegd
+
+### Bekende bugs (niet opgelost)
+- **Audio/Cast hoogte sync**: Lyrics groeit niet mee met cast matrix
+- **Preview/Export**: Niet volledig getest
+- **Style lock**: Eerste cast's ref_a wordt nog steeds als image ref gestuurd (AI kan persoon toevoegen)
+- **B scenes**: Onduidelijk of deze correct gegenereerd worden
+
+### Gebroken CSS wijzigingen
+- Lyrics hoogte CSS meerdere keren aangepast zonder succes
+- Originele `cast-expanded` logica (4+ cast) werkt niet correct
+
+### Aanbeveling
+**Terug naar v1.6.6** of grondig reviewen van alle wijzigingen sinds die versie.
+
+---
+
+## v1.6.9 (2026-01-13) - SERVICES INTEGRATION
+
+### Active Integration
+- **Replaced ~1160 lines** of duplicate code in main.py with imports from services/
+- Main.py reduced from 3444 to 2285 lines (33% reduction)
+- All functionality preserved via service imports
+
+### New Service Modules
+- `services/llm_service.py` - LLM API calls (Claude, OpenAI) with cascade fallback
+- `services/styles.py` - 55 visual style presets with tokens and script notes
+
+### Imported from services.config
+- `VERSION`, `FAL_KEY`, `OPENAI_KEY`, `CLAUDE_KEY`
+- `FAL_AUDIO`, `FAL_WHISPER`, `FAL_NANOBANANA`, `FAL_SEEDREAM45`, `FAL_FLUX2` + edit endpoints
+- `API_COSTS`, `MODEL_TO_ENDPOINT`, `SESSION_COST`, `PRICING_LOADED`
+- `RENDER_SEMAPHORE`, `EXPORT_STATUS`
+- `require_key()`, `fal_headers()`, `now_iso()`, `clamp()`, `safe_float()`
+- `retry_on_502()`, `track_cost()`, `fetch_live_pricing()`, `log_llm_call()`
+- `locked_render_models()`, `locked_editor_key()`, `locked_model_key()`
+
+### Imported from services.project_service
+- `sanitize_filename()`, `get_project_folder()`, `get_project_renders_dir()`
+- `get_project_audio_dir()`, `get_project_video_dir()`, `get_project_llm_dir()`
+- `save_llm_response()`, `download_image_locally()`
+- `validate_against_schema()`, `validate_shot()`, `validate_sequence()`, `validate_project_state()`
+- `project_path()`, `load_project()`, `recover_orphaned_renders()`, `save_project()`, `new_project()`
+- `list_projects()`, `delete_project()`, `normalize_structure_type()`
+
+### Imported from services.audio_service
+- `get_audio_duration_librosa()`, `get_audio_duration_mutagen()`, `get_audio_duration()`
+- `get_audio_bpm_librosa()`, `build_beat_grid()`, `snap_to_grid()`
+- `normalize_audio_understanding()`
+
+### Imported from services.cast_service
+- `find_cast()`, `cast_ref_urls()`, `get_cast_refs_for_shot()`, `get_lead_cast_ref()`
+- `create_cast_visual_dna()`, `update_cast_properties()`, `update_cast_lora()`
+- `delete_cast_from_state()`, `set_character_refs()`, `get_character_refs()`
+- `check_style_lock()`, `get_style_lock_image()`, `set_style_lock()`, `clear_style_lock()`
+- `get_scene_by_id()`, `get_scene_for_shot()`, `get_scene_decor_refs()`, `get_scene_wardrobe()`
+
+### Imported from services.render_service
+- `model_to_endpoint()`, `call_txt2img()`, `call_img2img_editor()`
+- `resolve_render_path()`, `build_shot_prompt()`, `get_shot_ref_images()`
+- `update_shot_render()`, `get_pending_shots()`, `get_render_stats()`
+
+### Imported from services.storyboard_service
+- `target_sequences_and_shots()`
+- `create_sequence()`, `find_sequence()`, `update_sequence()`
+- `create_shot()`, `find_shot()`, `update_shot()`, `delete_shot()`, `get_shots_for_sequence()`
+- `repair_timeline()`, `validate_shots_coverage()`, `get_cast_coverage()`
+
+### Imported from services.export_service
+- `update_export_status()`, `get_export_status()`
+- `check_ffmpeg()`, `export_video()`
+
+---
+
+## v1.6.8 (2026-01-13) - SERVICES EXTRACTION (Prep for v1.7)
+
+### New services/ Module (Preparation)
+- **Extracted 6 service modules** from main.py (not yet integrated):
+  - `config.py` - Shared configuration, API keys, endpoints, cost tracking
+  - `project_service.py` - Project CRUD, validation, folder management
+  - `audio_service.py` - Audio DNA extraction, BPM detection, beat grid
+  - `cast_service.py` - Cast management, character refs, style lock
+  - `render_service.py` - FAL image generation (txt2img, img2img)
+  - `storyboard_service.py` - Sequences, shots, timeline operations
+  - `export_service.py` - FFmpeg video export
+
+### Status
+- Services are **standalone modules** ready for import
+- main.py still contains original code (works as before)
+- v1.7.0 will integrate services into main.py
+
+---
+
+## v1.6.6 (2026-01-13) - BUG FIX SPRINT
+
+### Audio Expert Persistence Fix
+- Audio Expert checkbox (`use_whisper`) now properly restored on page reload
+- Added project state restoration in `DOMContentLoaded` event
+- Settings correctly synced from server when project ID exists
+
+### Scene Render Improvements
+- **Wardrobe auto-render**: When a scene has wardrobe defined, it's now automatically generated during scene render
+- New `_generate_wardrobe_ref_internal()` helper function for consistent wardrobe preview generation
+- Scene render endpoint now returns `wardrobe_ref` alongside `decor_refs` and `decor_alt`
+- Refactored wardrobe_ref endpoint to use shared helper (DRY code)
+
+### Shot Card UI Fix
+- Fixed Enter key not triggering shot edit (changed `this.value` to `event.target.value`)
+- Fixed arrow button using wrong DOM selector pattern
+- Both inline edit prompt input and arrow button now work correctly
+
+### Collapsible Sections Fix
+- `toggleSectionCollapse()` now handles both card modules (Audio, Cast) and subsections (Timeline, Shots)
+- Timeline and Shots sections can now be manually collapsed/expanded after auto-collapse
+- Fixed content element targeting for different section types
+
+---
+
+## v1.6.5 (2026-01-13) - STABILITY & CACHE FIX
 
 ### Race Condition Fix (Parallel Renders)
 - Added per-project threading locks for atomic load→modify→save operations

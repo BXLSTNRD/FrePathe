@@ -1,0 +1,14 @@
+# Data
+/data/
+
+# API keys
+.env
+*.env
+openai_key*
+claude_key*
+fal_key*
+
+# Python
+.venv/
+__pycache__/
+*.pyc

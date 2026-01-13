@@ -1206,15 +1206,11 @@ def build_prompt(state: Dict[str,Any], shot: Dict[str,Any]) -> str:
     return ", ".join([p.strip() for p in parts if p and str(p).strip()])
 
 # ========= UI Template =========
-TEMPLATES_DIR = BASE / "templates"
-STATIC_DIR = BASE / "static"
-TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-STATIC_DIR.mkdir(parents=True, exist_ok=True)
-
-INDEX_HTML_PATH = TEMPLATES_DIR / "index.html"
-STYLE_CSS_PATH = STATIC_DIR / "style.css"
-APP_JS_PATH = STATIC_DIR / "app.js"
-LOGO_PATH = STATIC_DIR / "logo.png"
+# v1.6.5: Serve directly from root directory (no duplicate files)
+INDEX_HTML_PATH = BASE / "index.html"
+STYLE_CSS_PATH = BASE / "style.css"
+APP_JS_PATH = BASE / "app.js"
+LOGO_PATH = BASE / "logo.png"
 
 def build_index_html() -> str:
     tpl = INDEX_HTML_PATH.read_text(encoding="utf-8")

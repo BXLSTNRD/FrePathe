@@ -235,12 +235,15 @@ async function updateCostCounter() {
 async function ensureProject() {
   if (pid()) return pid();
   setStatus("Creating project…", null);
+  // v1.6.5: Include use_whisper from checkbox when creating project
+  const useWhisperEl = document.getElementById("useWhisper");
   const data = {
     title: document.getElementById("title").value || "New Production",
     style_preset: document.getElementById("style").value,
     aspect: document.getElementById("aspect").value,
     llm: document.getElementById("llm").value,
-    image_model: document.getElementById("imageModel").value
+    image_model: document.getElementById("imageModel").value,
+    use_whisper: useWhisperEl?.checked || false
   };
   const result = await apiCall("/api/project/create", {
     method: "POST",
@@ -945,16 +948,16 @@ function renderCastList(state) {
           </div>
           
           <div class="cast-ref-a" onclick="${isLocked ? (refs.ref_a ? `showImagePopup('${refs.ref_a}')` : '') : `this.parentElement.querySelector('input[data-type=ref_a]').click()`}" style="cursor: pointer;">
-            ${refs.ref_a 
-              ? `<img src="${refs.ref_a}"/>`
+            ${refs.ref_a
+              ? `<img src="${refs.ref_a}?t=${Date.now()}"/>`
               : `<span>A</span>`
             }
             ${!isLocked && refs.ref_a ? `<button class="cast-rerender" onclick="event.stopPropagation(); rerenderSingleRef('${c.cast_id}', 'a')" title="Rerender A">↻</button>` : ''}
           </div>
-          
+
           <div class="cast-ref-b" onclick="${isLocked ? (refs.ref_b ? `showImagePopup('${refs.ref_b}')` : '') : `this.parentElement.querySelector('input[data-type=ref_b]').click()`}" style="cursor: pointer;">
-            ${refs.ref_b 
-              ? `<img src="${refs.ref_b}"/>`
+            ${refs.ref_b
+              ? `<img src="${refs.ref_b}?t=${Date.now()}"/>`
               : `<span>B</span>`
             }
             ${!isLocked && refs.ref_b ? `<button class="cast-rerender" onclick="event.stopPropagation(); rerenderSingleRef('${c.cast_id}', 'b')" title="Rerender B">↻</button>` : ''}

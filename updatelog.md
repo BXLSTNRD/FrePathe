@@ -68,3 +68,59 @@ Eens alle scenes decor en wardrobe locked hebben same
 
 UI TIMELINE:
 collabsable als alles gelocked
+
+## Update v1.6.4 → v1.6.5
+
+PROJECTMODULE
+    - De keuze ‘Audio Expert’ wordt niet onthouden bij het laden van een project.
+    → Moet persistent opgeslagen en correct hersteld worden bij load.
+
+AUDIODNA-MODULE
+    - Wanneer de module op ‘locked’ staat: Automatisch collapsen
+    - Manueel opnieuw openklapbaar blijven
+
+CASTMATRIX-MODULE
+    - Wanneer de module op ‘locked’ staat:
+    - Automatisch collapsen
+    - Manueel opnieuw openklapbaar blijven
+
+STORYBOARD-MODULE
+    - Buttons ‘Create Timeline’, ‘All Shots’ en ‘Render All’: Standaard disabled / grijs
+    Enkel actief wanneer zowel Audio als Cast gelocked zijn
+
+TIMELINE
+Scene Cards (na importeren van scenes):
+    - Bevatten Decor 1, Decor 2 en Wardrobe Preview
+      Momenteel rendert enkel de eerste preview
+      Decor 2 en Wardrobe Preview moeten ook correct renderen
+    - Wanneer de volledige timeline gevalideerd en gelocked is (alle decors en wardrobes):
+      Timeline wordt automatisch inklapbaar
+      Timeline collapse gebeurt automatisch
+
+SHOTS
+    - Character refs zijn niet altijd correct bij het renderen van shots
+        → Juiste character references moeten consistent gebruikt worden
+          Bij renderen van alle shots binnen één scène:
+          Alle shots worden wel gerenderd
+          Niet alle shots blijven zichtbaar
+         Bij nieuwe inkomende shots verdwijnen eerdere
+        → Alle gerenderde shots moeten consistent zichtbaar blijven
+
+Shot Cards:
+    Onder het promptveld:
+        - Plus-knop (image toevoegen) werkt niet meer
+        - Enter-knop triggert geen generatie of edit
+    → Beide moeten opnieuw functioneel zijn
+
+Render All:
+        - Naast ‘Render All’ een ‘Stop’-knop toevoegen
+        → Hiermee kan lopend renderproces gestopt worden
+- Extra promptveld toevoegen:
+        Negatieve prompt + Enter
+        Overrulet alle lopende en toekomstige renders
+
+Wanneer alle shots volledig gerenderd zijn:
+        Shots-sectie wordt automatisch inklapbaar
+
+METRICS
+    Label ‘style locked’: Mag verdwijnen wanneer deze status actief gebruikt wordt

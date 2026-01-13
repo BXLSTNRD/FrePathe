@@ -28,6 +28,13 @@ let PENDING_CAST_REFS = new Set();  // Set of cast_ids currently generating refs
 // ========= Utility =========
 function pid() { return document.getElementById("projectId").value.trim(); }
 
+// v1.6.5: Cache-busting for images - prevents browser from showing stale renders
+function cacheBust(url) {
+  if (!url) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}t=${Date.now()}`;
+}
+
 // v1.5.9: Per-module status system with domain-specific jokes
 const MODULE_JOKES = {
   audio: [
@@ -913,8 +920,8 @@ function renderCastList(state) {
           <input type="file" class="cast-file-input" data-type="ref_b" accept="image/*" onchange="updateCastRefImage('${c.cast_id}', 'b', this)" ${isLocked ? 'disabled' : ''}/>
           
           <div class="cast-thumb" onclick="${isLocked ? `showImagePopup('${mainImg}')` : `this.parentElement.querySelector('input[data-type=main]').click()`}">
-            ${mainImg 
-              ? `<img src="${mainImg}"/>`
+            ${mainImg
+              ? `<img src="${cacheBust(mainImg)}"/>`
               : `<span>+</span>`
             }
           </div>
@@ -949,7 +956,7 @@ function renderCastList(state) {
           
           <div class="cast-ref-a" onclick="${isLocked ? (refs.ref_a ? `showImagePopup('${refs.ref_a}')` : '') : `this.parentElement.querySelector('input[data-type=ref_a]').click()`}" style="cursor: pointer;">
             ${refs.ref_a
-              ? `<img src="${refs.ref_a}?t=${Date.now()}"/>`
+              ? `<img src="${cacheBust(refs.ref_a)}"/>`
               : `<span>A</span>`
             }
             ${!isLocked && refs.ref_a ? `<button class="cast-rerender" onclick="event.stopPropagation(); rerenderSingleRef('${c.cast_id}', 'a')" title="Rerender A">↻</button>` : ''}
@@ -957,7 +964,7 @@ function renderCastList(state) {
 
           <div class="cast-ref-b" onclick="${isLocked ? (refs.ref_b ? `showImagePopup('${refs.ref_b}')` : '') : `this.parentElement.querySelector('input[data-type=ref_b]').click()`}" style="cursor: pointer;">
             ${refs.ref_b
-              ? `<img src="${refs.ref_b}?t=${Date.now()}"/>`
+              ? `<img src="${cacheBust(refs.ref_b)}"/>`
               : `<span>B</span>`
             }
             ${!isLocked && refs.ref_b ? `<button class="cast-rerender" onclick="event.stopPropagation(); rerenderSingleRef('${c.cast_id}', 'b')" title="Rerender B">↻</button>` : ''}
@@ -1558,7 +1565,7 @@ function updateSceneCard(sceneId) {
     if (rendersContainer && sc.decor_refs?.length && sc.decor_refs[0]) {
       rendersContainer.innerHTML = `
         <div class="scene-render-container">
-          <img class="scene-render-img" src="${sc.decor_refs[0]}" onclick="showImagePopup('${sc.decor_refs[0]}')"/>
+          <img class="scene-render-img" src="${cacheBust(sc.decor_refs[0])}" onclick="showImagePopup('${sc.decor_refs[0]}')"/>
           <button class="rerender-btn" onclick="rerenderScene('${sc.scene_id}')" title="Re-render">↻</button>
         </div>
       `;
@@ -1643,8 +1650,8 @@ function renderTimeline(state) {
     return `
       <div class="timeline-seg-v2 ${selected} ${inQueue ? 'in-queue' : ''}" onclick="selectSequence('${seq.sequence_id}')" data-scene-id="${scene?.scene_id || ''}">
         <div class="timeline-seg-thumb" onclick="event.stopPropagation(); ${thumb ? `showScenePopup('${scene?.scene_id}')` : ''}">
-          ${thumb 
-            ? `<img src="${thumb}"/>`
+          ${thumb
+            ? `<img src="${cacheBust(thumb)}"/>`
             : (inQueue ? `<span class="queue-num">#${queuePos + 1}</span>` : `<span>${idx + 1}</span>`)
           }
           ${hasScene && !thumb && !inQueue ? `<button class="scene-import-btn" onclick="event.stopPropagation(); importSceneImage('${scene.scene_id}')" title="Import image">📁</button>` : ''}
@@ -1690,7 +1697,7 @@ function showScenePopup(sceneId) {
   const img = document.getElementById("scenePopupImage");
   if (img) {
     if (thumb) {
-      img.src = thumb;
+      img.src = cacheBust(thumb);
       img.style.display = "block";
       img.onclick = () => showImagePopup(thumb);
     } else {
@@ -1735,7 +1742,7 @@ function showScenePopup(sceneId) {
   const altImg = document.getElementById("scenePopupImageAltImg");
   if (altImg) {
     if (thumbAlt) {
-      altImg.src = thumbAlt;
+      altImg.src = cacheBust(thumbAlt);
       altImg.style.display = "block";
       altImg.onclick = () => showImagePopup(thumbAlt);
     } else {
@@ -1767,7 +1774,7 @@ function showScenePopup(sceneId) {
 
   if (wardrobeImg && wardrobeEmpty) {
     if (wardrobeRef) {
-      wardrobeImg.src = wardrobeRef;
+      wardrobeImg.src = cacheBust(wardrobeRef);
       wardrobeImg.style.display = "block";
       wardrobeImg.onclick = () => showImagePopup(wardrobeRef);
       wardrobeEmpty.style.display = "none";
@@ -1880,8 +1887,8 @@ function openSceneRefPicker(sceneId, type) {
       <div class="ref-pick-cast">
         <div class="ref-pick-cast-name">${c.name || c.cast_id}</div>
         <div class="ref-pick-cast-imgs">
-          ${refA ? `<img src="${refA}" onclick="selectSceneRef('${sceneId}', '${type}', '${refA}', '${c.cast_id}_A')" title="Ref A"/>` : ''}
-          ${refB ? `<img src="${refB}" onclick="selectSceneRef('${sceneId}', '${type}', '${refB}', '${c.cast_id}_B')" title="Ref B"/>` : ''}
+          ${refA ? `<img src="${cacheBust(refA)}" onclick="selectSceneRef('${sceneId}', '${type}', '${refA}', '${c.cast_id}_A')" title="Ref A"/>` : ''}
+          ${refB ? `<img src="${cacheBust(refB)}" onclick="selectSceneRef('${sceneId}', '${type}', '${refB}', '${c.cast_id}_B')" title="Ref B"/>` : ''}
         </div>
       </div>
     `;
@@ -1890,7 +1897,7 @@ function openSceneRefPicker(sceneId, type) {
   // Build scene decors section (for reference)
   const sceneDecorsHtml = scenes.filter(s => s.decor_refs?.[0]).map(s => `
     <div class="ref-pick-item" onclick="selectSceneRef('${sceneId}', '${type}', '${s.decor_refs[0]}', '${s.scene_id}')">
-      <img src="${s.decor_refs[0]}"/>
+      <img src="${cacheBust(s.decor_refs[0])}"/>
       <div class="ref-pick-label">${s.title || s.scene_id}</div>
     </div>
   `).join("");
@@ -2073,8 +2080,8 @@ function renderShots(state) {
           }
           <div class="shot-card-desc">${desc}</div>
           <div class="shot-render-container">
-            ${hasRender 
-              ? `<img class="shot-render-img" src="${sh.render.image_url}" onclick="showImagePopup('${sh.render.image_url}')"/>
+            ${hasRender
+              ? `<img class="shot-render-img" src="${cacheBust(sh.render.image_url)}" onclick="showImagePopup('${sh.render.image_url}')"/>
                  <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${sh.shot_id}')" title="Re-render">↻</button>`
               : inQueue
                 ? `<div class="shot-render-placeholder queue-status">
@@ -2211,8 +2218,8 @@ function openShotRefPicker(shotId) {
       <div class="ref-pick-cast">
         <div class="ref-pick-cast-name">${c.name || c.cast_id}</div>
         <div class="ref-pick-cast-imgs">
-          ${refA ? `<img src="${refA}" onclick="selectShotRef('${shotId}', '${refA}', '${c.cast_id}_A')" title="Ref A"/>` : ''}
-          ${refB ? `<img src="${refB}" onclick="selectShotRef('${shotId}', '${refB}', '${c.cast_id}_B')" title="Ref B"/>` : ''}
+          ${refA ? `<img src="${cacheBust(refA)}" onclick="selectShotRef('${shotId}', '${refA}', '${c.cast_id}_A')" title="Ref A"/>` : ''}
+          ${refB ? `<img src="${cacheBust(refB)}" onclick="selectShotRef('${shotId}', '${refB}', '${c.cast_id}_B')" title="Ref B"/>` : ''}
         </div>
       </div>
     `;
@@ -2224,7 +2231,7 @@ function openShotRefPicker(shotId) {
   
   const shotsHtml = rendered.map(s => `
     <div class="ref-pick-item" onclick="selectShotRef('${shotId}', '${s.render.image_url}', '${s.shot_id}')">
-      <img src="${s.render.image_url}"/>
+      <img src="${cacheBust(s.render.image_url)}"/>
       <div class="ref-pick-label">${s.shot_id.replace(/seq_(\d+)/, 'sc$1')}</div>
     </div>
   `).join("");
@@ -2275,7 +2282,7 @@ function openShotEditor(shotId) {
   const promptInput = document.getElementById("shotEditPrompt");
   const castSelect = document.getElementById("shotEditorCast");
   
-  img.src = shot.render.image_url;
+  img.src = cacheBust(shot.render.image_url);
   promptInput.value = "";
   
   // Populate cast selector
@@ -2314,7 +2321,7 @@ function addCastToShotEditor() {
   const container = document.getElementById("shotEditorExtraRefs");
   container.innerHTML += `
     <div class="extra-ref-chip" data-cast="${castId}">
-      ${thumb ? `<img src="${thumb}"/>` : ''}
+      ${thumb ? `<img src="${cacheBust(thumb)}"/>` : ''}
       <span>${cast?.name || castId}</span>
       <button onclick="removeCastFromShotEditor('${castId}')">×</button>
     </div>
@@ -2533,7 +2540,7 @@ function updateShotCardImage(shotId, imageUrl) {
 
   // Also add the edit row if not present
   container.innerHTML = `
-    <img class="shot-render-img" src="${imageUrl}" onclick="showImagePopup('${imageUrl}')"/>
+    <img class="shot-render-img" src="${cacheBust(imageUrl)}" onclick="showImagePopup('${imageUrl}')"/>
     <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${shotId}')" title="Re-render">↻</button>
   `;
 
@@ -2836,7 +2843,7 @@ function updateShotCard(shotId) {
       const container = card.querySelector('.shot-render-container');
       if (container && sh.render?.image_url) {
         container.innerHTML = `
-          <img class="shot-render-img" src="${sh.render.image_url}" onclick="showImagePopup('${sh.render.image_url}')"/>
+          <img class="shot-render-img" src="${cacheBust(sh.render.image_url)}" onclick="showImagePopup('${sh.render.image_url}')"/>
           <button class="rerender-btn" onclick="renderShot('${sh.shot_id}')" title="Re-render">↻</button>
         `;
       }

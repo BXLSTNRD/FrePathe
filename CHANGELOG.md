@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.6.5 (2025-01-13) - STABILITY & CACHE FIX
+
+### Race Condition Fix (Parallel Renders)
+- Added per-project threading locks for atomic load→modify→save operations
+- Fixes bug where parallel renders would overwrite each other's results
+- All render endpoints now thread-safe:
+  - Shot render and edit
+  - Cast canonical refs and single ref rerender
+  - Scene decor render, alt decor, and edit
+
+### Cache-Busting for All Images
+- New `cacheBust(url)` helper adds timestamp to image URLs
+- Prevents browser from showing stale renders after re-rendering
+- Applied to all dynamically rendered images:
+  - Cast refs (main, ref_a, ref_b)
+  - Scene decors in timeline and ref picker
+  - Shot renders in storyboard cards
+  - Shot ref picker images
+  - Shot editor images
+  - Scene popup images (decor 1, decor 2, wardrobe)
+
+### Audio Expert Persistence Fix
+- `ensureProject()` now captures checkbox state when creating new projects
+- Audio Expert setting properly stored when audio is imported
+- Setting changeable after analysis but before lock
+
+---
+
 ## v1.6.3 (2025-01-12) - AUDIO LOCK FIX & UI POLISH
 
 ### Audio Lock Flow (3-stage)

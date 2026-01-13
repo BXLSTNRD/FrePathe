@@ -1,4 +1,4 @@
-// BXLSTNRD Video Studio v1.6.6
+// BXLSTNRD Video Studio v1.6.9
 
 const DEFAULT_AUDIO_PROMPT = `Analyze this audio and return ONLY a JSON object with this exact structure (no markdown, no prose):
 {
@@ -20,7 +20,7 @@ let AUDIO_DATA = {};
 // v1.5.3: Unified Render Queue System for shots, scenes, and cast refs
 let RENDER_QUEUE = [];  // Array of {type: "shot"|"scene"|"cast", id: string}
 let ACTIVE_RENDERS = 0;
-const MAX_CONCURRENT = 2;
+const MAX_CONCURRENT = 6;  // v1.6.6: Balanced for stability (FAL limit is 20, but uploads need breathing room)
 
 // v1.5.8: Track pending canonical ref renders to prevent duplicates
 let PENDING_CAST_REFS = new Set();  // Set of cast_ids currently generating refs
@@ -408,10 +408,12 @@ function updateUI() {
 function updateButtonStates() {
   const seqs = PROJECT_STATE?.storyboard?.sequences || [];
   const scenes = PROJECT_STATE?.cast_matrix?.scenes || [];
-  const castLocked = PROJECT_STATE?.project?.cast_locked;
-  const audioLocked = PROJECT_STATE?.project?.audio_locked;
+  // v1.7.0: Explicit true checks to handle undefined
+  const castLocked = PROJECT_STATE?.project?.cast_locked === true;
+  const audioLocked = PROJECT_STATE?.project?.audio_locked === true;
   // v1.5.8: Fix audio loaded check - audio_dna.meta exists when audio is imported
-  const audioLoaded = PROJECT_STATE?.audio_dna?.meta?.duration_sec > 0;
+  const dna = PROJECT_STATE?.audio_dna;
+  const audioLoaded = !!(dna && (dna.meta?.duration_sec > 0 || dna.style || dna.lyrics?.length > 0));
   
   // v1.6.3: Debug logging
   console.log(`[ButtonStates] audioLoaded=${audioLoaded}, audioLocked=${audioLocked}, castLocked=${castLocked}, scenes=${scenes.length}`);
@@ -452,8 +454,9 @@ const AUTO_COLLAPSED_SECTIONS = new Set();
 
 // v1.6.5: Update collapsible sections - auto-collapse when individually locked, manual toggle always works
 function updateCollapsibleSections() {
-  const audioLocked = PROJECT_STATE?.project?.audio_locked;
-  const castLocked = PROJECT_STATE?.project?.cast_locked;
+  // v1.7.0: Explicit true checks
+  const audioLocked = PROJECT_STATE?.project?.audio_locked === true;
+  const castLocked = PROJECT_STATE?.project?.cast_locked === true;
 
   // v1.6.5: Auto-collapse audio section when audio is locked (only once per lock)
   if (audioLocked && !AUTO_COLLAPSED_SECTIONS.has("section-audio")) {
@@ -609,6 +612,16 @@ function showAudioPopup(field) {
       </div>
       <p class="muted" style="margin-top: 12px; font-size: 11px;">If auto-detection is wrong, enter the correct BPM here.</p>
     `;
+  // v1.7.0: Lyrics is editable (for when transcription hallucinates)
+  } else if (field === "lyrics") {
+    const currentLyrics = AUDIO_DATA.lyrics || "No lyrics detected";
+    document.getElementById("audioPopupContent").innerHTML = `
+      <p class="muted" style="margin-bottom: 8px; font-size: 11px;">⚠️ Auto-transcription can hallucinate on fast-paced or non-English tracks. Paste correct lyrics below:</p>
+      <textarea id="lyricsEditInput" style="width: 100%; height: 300px; padding: 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-family: monospace; font-size: 12px; resize: vertical;">${currentLyrics}</textarea>
+      <div style="margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end;">
+        <button class="accent-btn" onclick="updateLyrics()">SAVE LYRICS</button>
+      </div>
+    `;
   } else {
     document.getElementById("audioPopupContent").textContent = AUDIO_DATA[field] || "No data";
   }
@@ -636,6 +649,33 @@ async function updateBpm() {
     document.getElementById("audioBpm").textContent = newBpm;
     hidePopup("audioPopup");
     setStatus("BPM updated", 100);
+    await refreshFromServer();
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+// v1.7.0: Update lyrics manually (for hallucinated transcriptions)
+async function updateLyrics() {
+  const newLyrics = document.getElementById("lyricsEditInput").value.trim();
+  if (!newLyrics) {
+    showError("Lyrics cannot be empty");
+    return;
+  }
+  
+  try {
+    setStatus("Updating lyrics…", null);
+    await apiCall(`/api/project/${pid()}/audio/lyrics`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lyrics: newLyrics })
+    });
+    
+    // Update local state
+    AUDIO_DATA.lyrics = newLyrics;
+    document.getElementById("audioLyrics").textContent = newLyrics.substring(0, 500) + (newLyrics.length > 500 ? "…" : "");
+    hidePopup("audioPopup");
+    setStatus("Lyrics updated", 100);
     await refreshFromServer();
   } catch (e) {
     showError(e.message);
@@ -738,6 +778,11 @@ async function importAudio() {
     if (!result.ok) throw new Error(txt);
     
     const js = JSON.parse(txt);
+    
+    // v1.7.0: Update PROJECT_STATE with new audio_dna BEFORE parsing
+    if (!PROJECT_STATE) PROJECT_STATE = js;
+    else PROJECT_STATE.audio_dna = js.audio_dna;
+    
     parseAudioDNA(js.audio_dna);
     
     // v1.6.3: 3-stage button flow - after import, show LOCK button
@@ -753,15 +798,23 @@ async function importAudio() {
 
 // v1.6.3: Update audio button states based on current state
 function updateAudioButtons() {
-  const audioLoaded = PROJECT_STATE?.audio_dna?.meta?.duration_sec > 0;
-  const audioLocked = PROJECT_STATE?.project?.audio_locked;
+  // v1.7.0: More robust audio loaded check - check multiple indicators
+  const dna = PROJECT_STATE?.audio_dna;
+  const duration = dna?.meta?.duration_sec || dna?.duration_sec || 0;
+  const audioLoaded = !!dna && (parseFloat(duration) > 0 || dna?.style || dna?.lyrics?.length > 0);
+  const audioLocked = PROJECT_STATE?.project?.audio_locked === true;  // v1.7.0: Explicit true check
+  
+  console.log("[updateAudioButtons] dna:", !!dna, "duration:", duration, "loaded:", audioLoaded, "locked:", audioLocked);
   
   const importBtn = document.getElementById("importAudioBtn");
   const lockBtn = document.getElementById("lockAudioBtn");
   const lockedBadge = document.getElementById("audioLockedBadge");
   
+  // v1.7.0: Show LOCK button when audio is loaded but NOT locked
+  const showLockBtn = audioLoaded && !audioLocked;
+  
   if (importBtn) importBtn.classList.toggle("hidden", audioLoaded);
-  if (lockBtn) lockBtn.classList.toggle("hidden", !audioLoaded || audioLocked);
+  if (lockBtn) lockBtn.classList.toggle("hidden", !showLockBtn);
   if (lockedBadge) lockedBadge.classList.toggle("hidden", !audioLocked);
 }
 
@@ -812,13 +865,18 @@ function parseAudioDNA(dna) {
   // Use parsed blob data if available and main fields are empty
   const src = parsedFromBlob || dna;
   
-  // Handle both nested and flat structures
+  // v1.7.0: Handle both nested and flat structures from normalize_audio_understanding
   const bpm = dna.meta?.bpm || src.bpm || null;
-  const style = dna.meta?.style || src.style || [];
-  const structure = dna.structure?.length ? dna.structure : (src.structure || []);
+  // v1.7.0: style is now at root level from Python, also check meta for legacy
+  const style = dna.style || dna.meta?.style || src.style || [];
+  const structure = dna.sections?.length ? dna.sections : (dna.structure?.length ? dna.structure : (src.structure || []));
   const dynamics = dna.dynamics?.length ? dna.dynamics : (src.dynamics || []);
-  const vocal = Object.keys(dna.vocal_delivery || {}).length ? dna.vocal_delivery : (src.vocal_delivery || {});
-  const story = (dna.story_arc?.theme) ? dna.story_arc : (src.story_arc || {});
+  // v1.7.0: delivery and story are now strings from Python normalize
+  const deliveryStr = dna.delivery || "";
+  const storyStr = dna.story || "";
+  // Legacy support for object formats
+  const vocal = typeof deliveryStr === 'string' ? {} : (dna.vocal_delivery || src.vocal_delivery || {});
+  const story = typeof storyStr === 'string' ? {} : (dna.story_arc || src.story_arc || {});
   const lyrics = dna.lyrics?.length ? dna.lyrics : (src.lyrics || []);
   const duration = dna.meta?.duration_sec || src.duration_sec || src.duration || 0;
   
@@ -833,6 +891,7 @@ function parseAudioDNA(dna) {
   }
   
   // Store parsed data
+  // v1.7.0: Handle both new string formats and legacy object formats
   AUDIO_DATA = {
     bpm: bpm ? `${bpm}` : "—",
     style: Array.isArray(style) ? style.join(", ") : (style || "—"),
@@ -842,11 +901,13 @@ function parseAudioDNA(dna) {
     dynamics: dynamics.length 
       ? dynamics.map(d => `${(d.start||0).toFixed(1)}s: Energy ${Math.round((d.energy||0)*100)}%`).join("\n") 
       : "—",
-    delivery: [
+    // v1.7.0: deliveryStr is now a string from Python, fallback to legacy object format
+    delivery: deliveryStr || [
       vocal.pace && `Pace: ${vocal.pace}`,
       vocal.tone?.length && `Tone: ${vocal.tone.join(", ")}`
     ].filter(Boolean).join("\n") || "—",
-    story: [
+    // v1.7.0: storyStr is now a string from Python, fallback to legacy object format
+    story: storyStr || [
       story.theme && `Theme: ${story.theme}`,
       story.conflict && `Conflict: ${story.conflict}`
     ].filter(Boolean).join("\n") || "—",
@@ -863,8 +924,14 @@ function parseAudioDNA(dna) {
   
   const avgEnergy = dynamics.length ? dynamics.reduce((a,d) => a + (d.energy||0), 0) / dynamics.length : 0;
   document.getElementById("audioDynamics").textContent = avgEnergy > 0.7 ? "High" : avgEnergy > 0.4 ? "Medium" : "Low";
-  document.getElementById("audioDelivery").textContent = vocal.pace || (vocal.tone?.slice(0,2).join(", ")) || "—";
-  document.getElementById("audioStory").textContent = (story.theme || "—").slice(0, 18);
+  // v1.7.0: Use deliveryStr directly or fallback to legacy object
+  document.getElementById("audioDelivery").textContent = deliveryStr 
+    ? deliveryStr.split(" - ")[0].slice(0, 15) 
+    : (vocal.pace || (vocal.tone?.slice(0,2).join(", ")) || "—");
+  // v1.7.0: Use storyStr directly or fallback to legacy object  
+  document.getElementById("audioStory").textContent = storyStr 
+    ? storyStr.slice(0, 25) + (storyStr.length > 25 ? "…" : "")
+    : (story.theme || "—").slice(0, 18);
   document.getElementById("audioLyrics").textContent = AUDIO_DATA.lyrics;
 }
 
@@ -2518,6 +2585,10 @@ async function renderItemAsync(item) {
       PENDING_CAST_REFS.add(item.id);
       try {
         await apiCall(`/api/project/${pid()}/cast/${item.id}/canonical_refs`, { method: "POST" });
+        // v1.7.0: Refresh state and update cast card with new refs
+        const freshState = await apiCall(`/api/project/${pid()}`);
+        PROJECT_STATE = freshState;
+        updateCastCardRefs(item.id, freshState);
       } finally {
         PENDING_CAST_REFS.delete(item.id);
       }
@@ -2527,6 +2598,36 @@ async function renderItemAsync(item) {
     console.warn(`${item.type} ${item.id} render failed:`, e);
     updateRenderStatus(item.type, item.id, "error");
   }
+}
+
+// v1.7.0: Update cast card with new refs without re-rendering entire list
+function updateCastCardRefs(castId, state) {
+  const card = document.querySelector(`.cast-card[data-cast-id="${castId}"]`);
+  if (!card) return;
+  
+  const charRefs = state?.cast_matrix?.character_refs || {};
+  const refs = charRefs[castId] || {};
+  
+  // Update ref_a thumbnail
+  const refAContainer = card.querySelector('.cast-ref-a');
+  if (refAContainer && refs.ref_a) {
+    refAContainer.innerHTML = `<img src="${cacheBust(refs.ref_a)}"/>`;
+  }
+  
+  // Update ref_b thumbnail
+  const refBContainer = card.querySelector('.cast-ref-b');
+  if (refBContainer && refs.ref_b) {
+    refBContainer.innerHTML = `<img src="${cacheBust(refs.ref_b)}"/>`;
+  }
+  
+  // Hide create button, show ref containers
+  const createBtn = card.querySelector('.cast-create-btn');
+  if (createBtn) createBtn.classList.add('hidden');
+  
+  const refsRow = card.querySelector('.cast-refs-row');
+  if (refsRow) refsRow.classList.remove('hidden');
+  
+  console.log(`[updateCastCardRefs] Updated refs for ${castId}: ref_a=${!!refs.ref_a}, ref_b=${!!refs.ref_b}`);
 }
 
 // v1.5.3: Update shot card with rendered image

@@ -2,660 +2,97 @@ import os, json, time, uuid, asyncio, threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
-# v1.6.5: Lock for thread-safe project file access (prevents race condition on parallel renders)
-PROJECT_LOCKS: Dict[str, threading.Lock] = {}
-PROJECT_LOCKS_LOCK = threading.Lock()  # Lock to create per-project locks
-
-def get_project_lock(project_id: str) -> threading.Lock:
-    """Get or create a lock for a specific project."""
-    with PROJECT_LOCKS_LOCK:
-        if project_id not in PROJECT_LOCKS:
-            PROJECT_LOCKS[project_id] = threading.Lock()
-        return PROJECT_LOCKS[project_id]
-
 import requests
 import fal_client
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from jsonschema import validate, ValidationError, Draft202012Validator
 
-# ========= Version =========
-VERSION = "1.6.6"
-
-# ========= v1.6.1: Retry Helper =========
-def retry_on_502(func: Callable, max_retries: int = 3, delay: float = 2.0):
-    """Retry a function on 5xx server errors with exponential backoff. 4xx errors fail immediately."""
-    def wrapper(*args, **kwargs):
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                return func(*args, **kwargs)
-            except HTTPException as e:
-                if e.status_code >= 500 and attempt < max_retries - 1:
-                    # Server error - worth retrying
-                    wait = delay * (2 ** attempt)
-                    print(f"[WARN] {e.status_code} error, retry {attempt+1}/{max_retries} in {wait:.1f}s: {str(e.detail)[:100]}")
-                    time.sleep(wait)
-                    last_error = e
-                else:
-                    # 4xx or final attempt - fail immediately
-                    raise
-            except requests.exceptions.RequestException as e:
-                if attempt < max_retries - 1:
-                    wait = delay * (2 ** attempt)
-                    print(f"[WARN] Request error, retry {attempt+1}/{max_retries} in {wait:.1f}s: {str(e)[:100]}")
-                    time.sleep(wait)
-                    last_error = e
-                else:
-                    raise HTTPException(502, f"Request failed after {max_retries} retries: {str(e)[:200]}")
-        raise last_error or HTTPException(502, "Max retries exceeded")
-    return wrapper
-
-# ========= Storage =========
-BASE = Path(__file__).resolve().parent
-DATA = BASE / "data"
-PROJECTS_DIR = DATA / "projects"
-UPLOADS_DIR = DATA / "uploads"
-RENDERS_DIR = DATA / "renders"  # v1.2.3: Local render storage
-DEBUG_DIR = DATA / "debug"  # v1.4: LLM prompt/response logging
-PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-RENDERS_DIR.mkdir(parents=True, exist_ok=True)
-DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-
-# v1.5.9.1: Export status tracking (in-memory, per project)
-EXPORT_STATUS: Dict[str, Dict[str, Any]] = {}
-
-# v1.4: Cost tracking (per session) - Real fal.ai pricing (Jan 2025)
-# Source: https://fal.ai/pricing, https://docs.fal.ai/platform-apis/v1/models/pricing
-# NOTE: For dynamic/live pricing, call: GET https://api.fal.ai/v1/models/pricing
-API_COSTS = {
-    # v1.6.1: Correct pricing from FAL dashboard (Jan 2026)
-    # Audio - $0.01 per 5 seconds
-    "fal-ai/audio-understanding": 0.002,  # Per second: $0.01/5s = $0.002/s
-    "fal-ai/whisper": 0.0004,  # $0.0004/second ($0.024/minute)
-    # Text-to-Image (per image)
-    "fal-ai/nano-banana-pro": 0.15,       # $0.15/image
-    "fal-ai/flux/dev": 0.025,             # $0.025/megapixel
-    "fal-ai/flux-1/dev": 0.025,           # $0.025/megapixel
-    "fal-ai/flux-2": 0.012,               # $0.012/megapixel
-    "fal-ai/flux-pro/v1.1": 0.04,
-    "fal-ai/recraft/v3": 0.04,
-    "fal-ai/bytedance/seedream/v4.5/text-to-image": 0.04,  # $0.04/image
-    # Image-to-Image / Edit (per image)
-    "fal-ai/nano-banana-pro/edit": 0.15,  # $0.15/image
-    "fal-ai/flux/dev/image-to-image": 0.025,
-    "fal-ai/flux-2/edit": 0.012,          # $0.012/megapixel
-    "fal-ai/bytedance/seedream/v4.5/edit": 0.04,  # $0.04/image
-    "fal-ai/kontext/edit": 0.05,
-    # Internal editor key mappings (same prices)
-    "fal-ai/nanobanana_edit": 0.15,
-    "fal-ai/flux2_edit": 0.012,
-    "fal-ai/seedream45_edit": 0.04,
-    "fal-ai/kontext_edit": 0.05,
-    # LLM (per call, estimated ~2-5K tokens avg)
-    "claude-sonnet-4-5-20250929": 0.02,   # ~$3/$15 per 1M tokens
-    "claude-3-5-sonnet-latest": 0.015,
-    "claude-3-5-sonnet-20241022": 0.015,
-    "claude-3-haiku-20240307": 0.002,     # ~$0.25/$1.25 per 1M tokens
-    "gpt-4o-mini": 0.001,
-    # Default
-    "default": 0.05,
-}
-
-# v1.5: Map internal model keys to FAL endpoint IDs for accurate cost tracking
-MODEL_TO_ENDPOINT = {
-    "nanobanana_edit": "fal-ai/nano-banana-pro/edit",
-    "flux2_edit": "fal-ai/flux-2/edit",
-    "seedream45_edit": "fal-ai/bytedance/seedream/v4.5/edit",
-    "kontext_edit": "fal-ai/kontext/edit",
-    "nano-banana-pro": "fal-ai/nano-banana-pro",
-    "flux-dev": "fal-ai/flux/dev",
-    "flux-pro": "fal-ai/flux-pro/v1.1",
-    "recraft-v3": "fal-ai/recraft/v3",
-    "seedream45": "fal-ai/bytedance/seedream/v4.5/text-to-image",
-}
-
-SESSION_COST = {"total": 0.0, "calls": []}
-PRICING_LOADED = False
-
-# v1.5: Semaphore for concurrent render limiting
-RENDER_SEMAPHORE = asyncio.Semaphore(2)  # Max 2 concurrent renders
-
-def fetch_live_pricing():
-    """v1.4.2: Fetch live pricing from fal.ai API."""
-    global API_COSTS, PRICING_LOADED
-    fal_key = os.environ.get("FAL_KEY", "").strip()
-    if not fal_key:
-        print("[INFO] No FAL_KEY, using default pricing")
-        return
-    try:
-        r = requests.get(
-            "https://api.fal.ai/v1/models/pricing",
-            headers={"Authorization": f"Key {fal_key}"},
-            timeout=10
-        )
-        if r.ok:
-            data = r.json()
-            for item in data.get("prices", []):
-                endpoint_id = item.get("endpoint_id", "")
-                unit_price = item.get("unit_price", 0)
-                if endpoint_id and unit_price:
-                    API_COSTS[endpoint_id] = unit_price
-            PRICING_LOADED = True
-            print(f"[INFO] Loaded {len(data.get('prices', []))} prices from fal.ai")
-    except Exception as e:
-        print(f"[WARN] Failed to fetch live pricing: {e}")
-
-# v1.5: Beat Grid Calculation
-def build_beat_grid(duration_sec: float, bpm: float) -> Dict[str, Any]:
-    """Calculate beat and bar positions for audio sync."""
-    if not bpm or bpm <= 0 or not duration_sec:
-        return {"beats": [], "bars": [], "beat_sec": 0, "bar_sec": 0, "bpm": 0, "total_beats": 0, "total_bars": 0}
-    
-    beat_sec = 60.0 / bpm  # Duration of one beat
-    bar_sec = beat_sec * 4  # 4 beats per bar (standard 4/4 time)
-    
-    # Generate beat positions
-    beats = []
-    t = 0.0
-    while t <= duration_sec:
-        beats.append(round(t, 3))
-        t += beat_sec
-    
-    # Generate bar positions
-    bars = []
-    t = 0.0
-    while t <= duration_sec:
-        bars.append(round(t, 3))
-        t += bar_sec
-    
-    return {
-        "bpm": bpm,
-        "beat_sec": round(beat_sec, 4),
-        "bar_sec": round(bar_sec, 4),
-        "beats": beats,
-        "bars": bars,
-        "total_beats": len(beats),
-        "total_bars": len(bars),
-    }
-
-def snap_to_grid(t: float, grid: List[float], tolerance: float = 0.5) -> float:
-    """Snap a time value to the nearest grid position."""
-    if not grid:
-        return t
-    nearest = min(grid, key=lambda x: abs(x - t))
-    if abs(nearest - t) <= tolerance:
-        return nearest
-    return t
-
-def log_llm_call(endpoint: str, system: str, user: str, response: Any, project_id: str = "unknown"):
-    """v1.4: Log LLM prompts and responses for debugging."""
-    try:
-        ts = int(time.time())
-        log_file = DEBUG_DIR / f"{project_id}_llm_{ts}.json"
-        log_file.write_text(json.dumps({
-            "timestamp": ts,
-            "endpoint": endpoint,
-            "system_prompt": system,
-            "user_prompt": user,
-            "response": response,
-        }, indent=2, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        print(f"[WARN] Failed to log LLM call: {e}")
-
-def track_cost(model: str, count: int = 1, project_id: str = None, state: Dict = None):
-    """v1.5: Track API costs - resolve model keys and save to session/state."""
-    # v1.5: Resolve internal model key to endpoint ID
-    resolved_model = model
-    if model.startswith("fal-ai/"):
-        key = model.replace("fal-ai/", "")
-        if key in MODEL_TO_ENDPOINT:
-            resolved_model = MODEL_TO_ENDPOINT[key]
-    elif model in MODEL_TO_ENDPOINT:
-        resolved_model = MODEL_TO_ENDPOINT[model]
-    
-    cost = API_COSTS.get(resolved_model, API_COSTS.get(model, API_COSTS.get("default", 0.03))) * count
-    SESSION_COST["total"] += cost
-    SESSION_COST["calls"].append({"model": resolved_model, "cost": round(cost, 4), "ts": time.time()})
-    
-    # v1.4.9: Update state dict if provided (caller will save it)
-    if state is not None:
-        if "costs" not in state:
-            state["costs"] = {"total": 0.0, "calls": []}
-        state["costs"]["total"] = round(state["costs"].get("total", 0.0) + cost, 4)
-        state["costs"]["calls"].append({"model": resolved_model, "cost": round(cost, 4), "ts": time.time()})
-        # Keep last 100 calls
-        if len(state["costs"]["calls"]) > 100:
-            state["costs"]["calls"] = state["costs"]["calls"][-100:]
-
-def get_audio_duration_librosa(file_path: str) -> Optional[float]:
-    """v1.4: Get accurate audio duration using librosa."""
-    try:
-        import librosa
-        duration = librosa.get_duration(path=file_path)
-        return round(duration, 2)
-    except ImportError:
-        print("[WARN] librosa not installed, falling back to mutagen")
-        return None
-    except Exception as e:
-        print(f"[WARN] librosa failed: {e}")
-        return None
-
-# v1.5.8: Accurate BPM detection using librosa
-def get_audio_bpm_librosa(file_path: str) -> Optional[float]:
-    """Detect BPM using librosa beat tracking - much more accurate than FAL."""
-    try:
-        import librosa
-        # Load audio file
-        y, sr = librosa.load(file_path, sr=None)
-        # Use beat_track for tempo detection
-        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-        # tempo can be an array, get scalar
-        if hasattr(tempo, '__len__'):
-            tempo = float(tempo[0]) if len(tempo) > 0 else None
-        else:
-            tempo = float(tempo)
-        if tempo:
-            bpm = round(tempo, 1)
-            print(f"[INFO] Librosa BPM detection: {bpm}")
-            return bpm
-        return None
-    except ImportError:
-        print("[WARN] librosa not installed for BPM detection")
-        return None
-    except Exception as e:
-        print(f"[WARN] librosa BPM detection failed: {e}")
-        return None
-
-def get_audio_duration_mutagen(file_path: str) -> Optional[float]:
-    """Fallback: Get audio duration using mutagen."""
-    try:
-        from mutagen import File as MutagenFile
-        audio = MutagenFile(file_path)
-        if audio and audio.info:
-            return round(audio.info.length, 2)
-    except Exception as e:
-        print(f"[WARN] mutagen failed: {e}")
-    return None
-
-def get_audio_duration(file_path: str) -> Optional[float]:
-    """v1.4: Get audio duration with fallbacks."""
-    # Try librosa first (most accurate)
-    dur = get_audio_duration_librosa(file_path)
-    if dur:
-        return dur
-    # Fallback to mutagen
-    dur = get_audio_duration_mutagen(file_path)
-    if dur:
-        return dur
-    return None
-
-# ========= v1.5.9.1: Project Folder System =========
-import re
-
-def sanitize_filename(name: str, max_length: int = 50) -> str:
-    """Convert string to safe filename: ASCII alphanumeric + underscore only."""
-    if not name:
-        return "unnamed"
-    # Replace spaces and common separators with underscore
-    safe = re.sub(r'[\s\-\.]+', '_', name)
-    # Keep only alphanumeric and underscore
-    safe = re.sub(r'[^a-zA-Z0-9_]', '', safe)
-    # Remove consecutive underscores
-    safe = re.sub(r'_+', '_', safe)
-    # Strip leading/trailing underscores
-    safe = safe.strip('_')
-    # Truncate
-    if len(safe) > max_length:
-        safe = safe[:max_length].rstrip('_')
-    return safe or "unnamed"
-
-def get_project_folder(state: Dict[str, Any]) -> Path:
-    """Get project folder path, create if needed. Format: ProjectTitle_vX.X.X"""
-    project = state.get("project", {})
-    title = project.get("title", "Untitled")
-    # Use version that created the project, or current version
-    created_version = project.get("created_version", VERSION)
-    
-    safe_title = sanitize_filename(title, 30)
-    folder_name = f"{safe_title}_v{created_version}"
-    
-    folder_path = PROJECTS_DIR / folder_name
-    folder_path.mkdir(parents=True, exist_ok=True)
-    return folder_path
-
-def get_project_renders_dir(state: Dict[str, Any]) -> Path:
-    """Get renders subdirectory for project."""
-    renders_dir = get_project_folder(state) / "renders"
-    renders_dir.mkdir(parents=True, exist_ok=True)
-    return renders_dir
-
-def get_project_audio_dir(state: Dict[str, Any]) -> Path:
-    """Get audio subdirectory for project."""
-    audio_dir = get_project_folder(state) / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    return audio_dir
-
-def get_project_video_dir(state: Dict[str, Any]) -> Path:
-    """Get video subdirectory for project."""
-    video_dir = get_project_folder(state) / "video"
-    video_dir.mkdir(parents=True, exist_ok=True)
-    return video_dir
-
-def get_project_llm_dir(state: Dict[str, Any]) -> Path:
-    """Get LLM responses subdirectory for project."""
-    llm_dir = get_project_folder(state) / "llm"
-    llm_dir.mkdir(parents=True, exist_ok=True)
-    return llm_dir
-
-def save_llm_response(state: Dict[str, Any], name: str, response: Any) -> Path:
-    """Save LLM response to project's llm folder. Returns path."""
-    llm_dir = get_project_llm_dir(state)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    filename = f"{name}_{timestamp}.json"
-    filepath = llm_dir / filename
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(response, f, indent=2, ensure_ascii=False)
-    print(f"[INFO] Saved LLM response: {filepath}")
-    return filepath
-
-def download_image_locally(url: str, project_id: str, prefix: str, state: Dict[str, Any] = None, friendly_name: str = None) -> str:
-    """v1.5.9.1: Download image to project folder with friendly naming.
-    If state provided: saves to project folder with friendly name.
-    If no state: legacy behavior (saves to global renders folder).
-    """
-    if not url or url.startswith("/renders/"):
-        return url
-    try:
-        ext = ".png"
-        if ".jpg" in url or ".jpeg" in url:
-            ext = ".jpg"
-        elif ".webp" in url:
-            ext = ".webp"
-        
-        # v1.5.9.1: Use project folder if state provided
-        if state:
-            renders_dir = get_project_renders_dir(state)
-            if friendly_name:
-                local_filename = f"{friendly_name}{ext}"
-            else:
-                local_filename = f"{prefix}{ext}"
-            local_path = renders_dir / local_filename
-            
-            # Download
-            r = requests.get(url, timeout=60)
-            if r.status_code == 200:
-                local_path.write_bytes(r.content)
-            
-            # Return path relative to DATA for serve_render
-            rel_path = local_path.relative_to(DATA)
-            return f"/renders/{rel_path.as_posix()}"
-        else:
-            # Legacy behavior
-            import hashlib
-            url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-            local_filename = f"{project_id}_{prefix}_{url_hash}{ext}"
-            local_path = RENDERS_DIR / local_filename
-            
-            if not local_path.exists():
-                r = requests.get(url, timeout=60)
-                if r.status_code == 200:
-                    local_path.write_bytes(r.content)
-            
-            return f"/renders/{local_filename}"
-    except Exception as e:
-        print(f"[WARN] Failed to download image locally: {e}")
-        return url
-
-# ========= Schema Validation (v1.12) =========
-CONTRACTS_DIR = BASE / "contracts"
-_SCHEMAS: Dict[str, Any] = {}
-
-def _load_schemas() -> None:
-    """Load all JSON schemas from contracts directory."""
-    global _SCHEMAS
-    if _SCHEMAS:
-        return
-    for schema_file in CONTRACTS_DIR.glob("*.schema.json"):
-        try:
-            schema = json.loads(schema_file.read_text(encoding="utf-8"))
-            schema_name = schema_file.stem.replace(".schema", "")
-            _SCHEMAS[schema_name] = schema
-        except Exception as e:
-            print(f"[WARN] Failed to load schema {schema_file.name}: {e}")
-
-def validate_against_schema(data: Dict[str, Any], schema_name: str, raise_on_error: bool = False) -> Tuple[bool, Optional[str]]:
-    """
-    Validate data against a named schema.
-    Returns (is_valid, error_message).
-    """
-    _load_schemas()
-    schema = _SCHEMAS.get(schema_name)
-    if not schema:
-        return (True, None)  # No schema = skip validation
-    try:
-        validate(instance=data, schema=schema)
-        return (True, None)
-    except ValidationError as e:
-        error_msg = f"Schema validation failed ({schema_name}): {e.message} at path {list(e.absolute_path)}"
-        if raise_on_error:
-            raise HTTPException(422, error_msg)
-        return (False, error_msg)
-
-def validate_shot(shot: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    """Validate a single shot object."""
-    required_fields = ["shot_id", "sequence_id", "start", "end", "structure_type", "energy", "cast", "prompt_base"]
-    missing = [f for f in required_fields if f not in shot]
-    if missing:
-        return (False, f"Shot missing required fields: {missing}")
-    if not isinstance(shot.get("start"), (int, float)) or not isinstance(shot.get("end"), (int, float)):
-        return (False, "Shot start/end must be numbers")
-    if shot["start"] >= shot["end"]:
-        return (False, f"Shot {shot['shot_id']}: start ({shot['start']}) must be < end ({shot['end']})")
-    if not 0.0 <= shot.get("energy", 0) <= 1.0:
-        return (False, f"Shot {shot['shot_id']}: energy must be 0.0-1.0")
-    return (True, None)
-
-def validate_sequence(seq: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    """Validate a single sequence object."""
-    required_fields = ["sequence_id", "start", "end", "structure_type", "energy"]
-    missing = [f for f in required_fields if f not in seq]
-    if missing:
-        return (False, f"Sequence missing required fields: {missing}")
-    if seq["start"] >= seq["end"]:
-        return (False, f"Sequence {seq['sequence_id']}: start ({seq['start']}) must be < end ({seq['end']})")
-    return (True, None)
-
-def validate_project_state(state: Dict[str, Any], strict: bool = False) -> Tuple[bool, List[str]]:
-    """
-    Validate entire project state.
-    Returns (is_valid, list_of_errors).
-    """
-    errors = []
-    
-    # Check required top-level keys
-    required_keys = ["project", "audio_dna", "cast", "storyboard"]
-    for key in required_keys:
-        if key not in state:
-            errors.append(f"Missing required key: {key}")
-    
-    # Validate project
-    proj = state.get("project", {})
-    if not proj.get("id"):
-        errors.append("Project missing 'id'")
-    if not proj.get("style_preset"):
-        errors.append("Project missing 'style_preset'")
-    if proj.get("aspect") not in ["square", "vertical", "horizontal", None]:
-        errors.append(f"Invalid aspect: {proj.get('aspect')}")
-    
-    # Validate sequences
-    seqs = state.get("storyboard", {}).get("sequences", [])
-    for seq in seqs:
-        ok, err = validate_sequence(seq)
-        if not ok:
-            errors.append(err)
-    
-    # Validate shots
-    shots = state.get("storyboard", {}).get("shots", [])
-    for shot in shots:
-        ok, err = validate_shot(shot)
-        if not ok:
-            errors.append(err)
-    
-    # Check cast_id references in shots
-    valid_cast_ids = {c.get("cast_id") for c in state.get("cast", []) if c.get("cast_id")}
-    for shot in shots:
-        for cid in shot.get("cast", []):
-            if cid not in valid_cast_ids:
-                errors.append(f"Shot {shot.get('shot_id')} references unknown cast_id: {cid}")
-    
-    is_valid = len(errors) == 0
-    if strict and not is_valid:
-        raise HTTPException(422, f"Project validation failed: {errors}")
-    
-    return (is_valid, errors)
-
-# ========= Keys =========
-FAL_KEY = os.environ.get("FAL_KEY", "").strip()
-OPENAI_KEY = os.environ.get("OPENAI_KEY", "").strip()
-CLAUDE_KEY = os.environ.get("CLAUDE_KEY", "").strip()
-
-FAL_BASE = "https://fal.run"
-FAL_AUDIO = f"{FAL_BASE}/fal-ai/audio-understanding"
-FAL_WHISPER = f"{FAL_BASE}/fal-ai/whisper"  # v1.5.6: Whisper transcription
-# v1.11: Flux-1/dev + Redux removed (hard-disabled). Use locked T2I models instead.
-FAL_FLUX2_T2I = f"{FAL_BASE}/fal-ai/flux-2"
-FAL_SEEDREAM45_T2I = f"{FAL_BASE}/fal-ai/bytedance/seedream/v4.5/text-to-image"
-FAL_NANOBANANA_PRO_T2I = f"{FAL_BASE}/fal-ai/nano-banana-pro"
-FAL_FLUX2_EDIT = f"{FAL_BASE}/fal-ai/flux-2/edit"
-FAL_NANOBANANA_EDIT = f"{FAL_BASE}/fal-ai/nano-banana-pro/edit"
-FAL_SEEDREAM45_EDIT = f"{FAL_BASE}/fal-ai/bytedance/seedream/v4.5/edit"
-
-DEFAULT_AUDIO_PROMPT = (
-    "I need you to transcribe the lyrics (timecoded); "
-    "I need BPM; I need Style; "
-    "I need the Structure (timecoded); Dynamics (timecoded); "
-    "Vocal delivery and the Story/Arch"
+# ========= v1.6.9: Import Services =========
+from services.config import (
+    VERSION,
+    PROJECT_LOCKS, PROJECT_LOCKS_LOCK, get_project_lock,
+    BASE, DATA, PROJECTS_DIR, UPLOADS_DIR, RENDERS_DIR, DEBUG_DIR,
+    FAL_KEY, OPENAI_KEY, CLAUDE_KEY,
+    FAL_AUDIO, FAL_WHISPER,
+    FAL_NANOBANANA, FAL_NANOBANANA_EDIT,
+    FAL_SEEDREAM45, FAL_SEEDREAM45_EDIT,
+    FAL_FLUX2, FAL_FLUX2_EDIT,
+    API_COSTS, MODEL_TO_ENDPOINT, SESSION_COST, PRICING_LOADED,
+    RENDER_SEMAPHORE, EXPORT_STATUS,
+    require_key, fal_headers, now_iso, clamp, safe_float,
+    retry_on_502, track_cost, fetch_live_pricing, log_llm_call,
+    locked_render_models, locked_editor_key, locked_model_key,
+)
+from services.project_service import (
+    sanitize_filename,
+    get_project_folder, get_project_renders_dir, get_project_audio_dir,
+    get_project_video_dir, get_project_llm_dir, save_llm_response,
+    download_image_locally,
+    validate_against_schema, validate_shot, validate_sequence, validate_project_state,
+    project_path, load_project, recover_orphaned_renders, save_project, new_project,
+    list_projects, delete_project,
+    normalize_structure_type,
+)
+from services.audio_service import (
+    get_audio_duration_librosa, get_audio_duration_mutagen, get_audio_duration,
+    get_audio_bpm_librosa, build_beat_grid, snap_to_grid,
+    normalize_audio_understanding,
+)
+from services.cast_service import (
+    find_cast, cast_ref_urls, get_cast_refs_for_shot, get_lead_cast_ref,
+    create_cast_visual_dna, update_cast_properties, update_cast_lora,
+    delete_cast_from_state, set_character_refs, get_character_refs,
+    check_style_lock, get_style_lock_image, set_style_lock, clear_style_lock,
+    get_scene_by_id, get_scene_for_shot, get_scene_decor_refs, get_scene_wardrobe,
+    get_identity_url,
+)
+from services.render_service import (
+    model_to_endpoint, call_txt2img, call_img2img_editor,
+    resolve_render_path, build_shot_prompt, get_shot_ref_images,
+    update_shot_render, get_pending_shots, get_render_stats,
+    t2i_endpoint_and_payload, call_t2i_with_retry, energy_tokens, build_prompt,
+    save_fal_debug,
+)
+from services.storyboard_service import (
+    target_sequences_and_shots,
+    create_sequence, find_sequence, update_sequence,
+    create_shot, find_shot, update_shot, delete_shot, get_shots_for_sequence,
+    repair_timeline, validate_shots_coverage, get_cast_coverage,
+)
+from services.export_service import (
+    update_export_status, get_export_status,
+    check_ffmpeg, export_video,
+)
+from services.llm_service import (
+    extract_json_object, call_openai_json, call_claude_json,
+    CLAUDE_MODEL_CASCADE, call_llm_json,
+    load_prompt, save_llm_debug,
+)
+from services.styles import (
+    STYLE_PRESETS, style_tokens, style_script_notes,
+    get_style_label, list_styles, get_style_options_html,
+)
+from services.ui_service import (
+    TEMPLATES_DIR, STATIC_DIR, INDEX_HTML_PATH, STYLE_CSS_PATH, APP_JS_PATH, LOGO_PATH,
+    DEFAULT_AUDIO_PROMPT, build_index_html, get_app_js_content, get_media_type,
 )
 
-# ========= Storyboard heuristics =========
-SHOTS_PER_180S = 70
-SEQ_MIN, SEQ_MAX = 6, 10
-SHOTS_PER_SEQ_MIN, SHOTS_PER_SEQ_MAX = 5, 8
+# v1.7.0: All config, audio functions, and utilities now imported from services.
+# Project folder system: sanitize_filename, get_project_folder, get_project_renders_dir,
+#   get_project_audio_dir, get_project_video_dir, get_project_llm_dir, save_llm_response,
+#   download_image_locally from services.project_service
+# Schema validation: validate_against_schema, validate_shot, validate_sequence,
+#   validate_project_state from services.project_service
+# Audio: build_beat_grid, snap_to_grid, get_audio_duration, get_audio_bpm_librosa
+#   from services.audio_service
+# Storyboard: target_sequences_and_shots from services.storyboard_service
+# Config: FAL_KEY, OPENAI_KEY, CLAUDE_KEY, FAL_AUDIO, FAL_WHISPER, FAL_* endpoints,
+#   clamp, require_key, fal_headers, now_iso, log_llm_call, track_cost from services.config
+# v1.7.0: UI helpers imported from services.ui_service (DEFAULT_AUDIO_PROMPT, build_index_html, etc.)
 
-def clamp(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
-
-def target_sequences_and_shots(duration_sec: Optional[float]) -> Tuple[int, int]:
-    d = float(duration_sec) if duration_sec and duration_sec > 1 else 180.0
-    target_shots = int(round((d / 180.0) * SHOTS_PER_180S))
-    target_shots = int(clamp(target_shots, 20, 250))
-
-    seq_count = int(round(target_shots / 6.5))
-    seq_count = int(clamp(seq_count, SEQ_MIN, SEQ_MAX))
-
-    avg = target_shots / max(1, seq_count)
-    if avg < SHOTS_PER_SEQ_MIN:
-        seq_count = int(clamp(int(round(target_shots / SHOTS_PER_SEQ_MIN)), SEQ_MIN, SEQ_MAX))
-    elif avg > SHOTS_PER_SEQ_MAX:
-        seq_count = int(clamp(int(round(target_shots / SHOTS_PER_SEQ_MAX)), SEQ_MIN, SEQ_MAX))
-
-    return seq_count, target_shots
-
-def build_beat_grid(duration_sec: float, bpm: Optional[int]) -> Optional[Dict[str, Any]]:
-    if not bpm or bpm <= 0 or not duration_sec or duration_sec <= 0:
-        return None
-    beat = 60.0 / float(bpm)
-    bar = beat * 4.0
-    bars = int(duration_sec / bar) + 1
-    return {
-        "bpm": int(bpm),
-        "beat_sec": beat,
-        "bar_sec": bar,
-        "bars": [{"i": i, "t": round(i * bar, 3)} for i in range(bars)],
-        "cut_candidates": [{"t": round(i * bar, 3), "reason": "bar"} for i in range(bars)],
-    }
-
-# ========= Styles (20) =========
-STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
-    "anamorphic_cinema": {
-        "label": "Anamorphic Cinema",
-        "tokens": ["anamorphic lens", "cinematic lighting", "shallow depth of field", "film grain", "high dynamic range"],
-        "script_notes": "Modern cinematic coverage with motivated camera and emotional blocking.",
-    },
-    "8mm_vintage": {
-        "label": "8mm Vintage",
-        "tokens": ["8mm film", "dust and scratches", "soft halation", "vignette", "handheld drift"],
-        "script_notes": "Nostalgic memory texture. Lean on match-cuts and time-jumps.",
-    },
-    "noir_monochrome": {
-        "label": "Noir Monochrome",
-        "tokens": ["black and white", "film noir lighting", "high contrast", "smoke haze", "hard shadows"],
-        "script_notes": "Noir grammar: silhouettes, blinds, reflections, rain, moral tension.",
-    },
-    "neon_noir": {"label":"Neon Noir","tokens":["neon reflections","wet asphalt","cyan-magenta glow","urban night","hard contrast"],"script_notes":"City pulse, reflective surfaces, forward motion."},
-    "documentary_handheld": {"label":"Documentary Handheld","tokens":["handheld camera","natural light","documentary realism","imperfect framing","authentic moment"],"script_notes":"Observational shots, organic camera reactivity."},
-    "dreamlike_softfocus": {"label":"Dreamlike Softfocus","tokens":["soft focus","bloom","hazy atmosphere","gentle lens flare","slow motion feel"],"script_notes":"Elliptical transitions, symbolism over plot."},
-    "gritty_urban": {"label":"Gritty Urban","tokens":["gritty texture","streetlight sodium glow","high ISO grain","raw realism","urban decay"],"script_notes":"Hard cuts, kinetic beats, street-level tension."},
-    "period_70s": {"label":"Period 70s","tokens":["1970s film","warm tones","zoom lens","film grain","practical lighting"],"script_notes":"Zoom language, longer takes, character staging."},
-    "period_90s_indie": {"label":"90s Indie","tokens":["1990s indie film","muted palette","handheld intimacy","natural window light"],"script_notes":"Lo-fi sincerity, intimate coverage."},
-    "hyperreal_clean": {"label":"Hyperreal Clean","tokens":["ultra clean","sharp detail","stable camera","modern commercial lighting","minimal grain"],"script_notes":"Precise compositions, premium polish."},
-    "surreal_symbolism": {"label":"Surreal Symbolism","tokens":["surreal","symbolic props","unexpected scale","dream logic","metaphoric staging"],"script_notes":"Metaphor-first transitions."},
-    "one_take_energy": {"label":"One-Take Energy","tokens":["long take feel","continuous camera","blocking choreography","fluid movement"],"script_notes":"Each segment as a coherent mini-arc."},
-    "stop_motion_look": {"label":"Stop‑Motion Look","tokens":["stop motion aesthetic","tactile texture","miniature set feel","slight frame jitter"],"script_notes":"Tangible props; playful but precise continuity."},
-    "anime_cinematic": {"label":"Anime Cinematic","tokens":["anime cinematic framing","dramatic angles","stylized lighting","dynamic motion"],"script_notes":"Bold compositions, emotional punch-ins."},
-    "western_dust": {"label":"Western Dust","tokens":["western","dusty air","backlit sun","wide landscapes","gritty close-ups"],"script_notes":"Wide establishing + intense close-ups."},
-    "horror_suspense": {"label":"Horror Suspense","tokens":["low key lighting","negative space","uneasy framing","fog","subtle dread"],"script_notes":"Unease via pacing and framing; payoff on peaks."},
-    "romcom_bright": {"label":"Romcom Bright","tokens":["bright soft light","warm highlights","playful composition","colorful props","gentle contrast"],"script_notes":"Readable emotions, charming beats."},
-    "music_doc_backstage": {"label":"Music Doc / Backstage","tokens":["backstage","available light","close handheld","authentic gear","crowd energy"],"script_notes":"Candid moments + inserts; quick coverage."},
-    "sci_fi_retro": {"label":"Retro Sci‑Fi","tokens":["retro sci-fi","chrome","analog controls","practical neon","fogged glass"],"script_notes":"World-building via set detail; beats as system states."},
-    "art_nouveau_poetic": {"label":"Art Nouveau Poetic","tokens":["art nouveau curves","ornate ironwork","stained glass glow","poetic framing","elegant motifs"],"script_notes":"Repeating motifs; transitions echo rhythms."},
-    "minimalist_monochrome": {"label":"Minimalist Monochrome","tokens":["minimalism","monochrome","negative space","clean lines","quiet composition"],"script_notes":"Sparse storytelling; musically motivated cuts."},
-    # v1.5.7: 20 New styles
-    "vaporwave_aesthetic": {"label":"Vaporwave Aesthetic","tokens":["vaporwave","pink purple gradients","greek statues","retro tech","glitch effects","palm trees"],"script_notes":"Nostalgic irony, consumer culture visuals."},
-    "cyberpunk_2077": {"label":"Cyberpunk 2077","tokens":["cyberpunk","holographic ads","rain-slicked streets","neon kanji","chrome implants","dark future"],"script_notes":"Tech noir, body modification themes."},
-    "studio_ghibli": {"label":"Studio Ghibli","tokens":["studio ghibli style","hand painted backgrounds","soft watercolor","whimsical nature","magical realism"],"script_notes":"Environmental storytelling, wonder."},
-    "wes_anderson": {"label":"Wes Anderson","tokens":["symmetrical framing","pastel palette","vintage props","whimsical staging","centered composition"],"script_notes":"Deadpan humor, meticulous mise-en-scène."},
-    "tarantino_grindhouse": {"label":"Tarantino Grindhouse","tokens":["grindhouse","film damage","exploitation aesthetic","bold typography","retro violence"],"script_notes":"Pulpy dialogue, chapter structure."},
-    "blade_runner": {"label":"Blade Runner","tokens":["blade runner","rain","neon advertisements","industrial fog","noir future","flying vehicles"],"script_notes":"Existential themes, rain-soaked melancholy."},
-    "wong_kar_wai": {"label":"Wong Kar-Wai","tokens":["step printing","smeared motion","saturated colors","loneliness","neon reflections","romantic melancholy"],"script_notes":"Time manipulation, unrequited love."},
-    "lynch_surreal": {"label":"David Lynch Surreal","tokens":["surreal","red curtains","industrial hum","uncanny valley","dream nightmare","slow dread"],"script_notes":"Subconscious imagery, unsettling ordinary."},
-    "kubrick_symmetry": {"label":"Kubrick Symmetry","tokens":["one point perspective","symmetrical","cold precision","clinical lighting","unsettling stillness"],"script_notes":"Geometric perfection, human fragility."},
-    "instagram_lifestyle": {"label":"Instagram Lifestyle","tokens":["lifestyle photography","golden hour","soft bokeh","aspirational","clean minimal","influencer aesthetic"],"script_notes":"Aspirational beauty, product integration."},
-    "90s_mtv": {"label":"90s MTV","tokens":["90s mtv","quick cuts","dutch angles","fish eye lens","grunge aesthetic","video effects"],"script_notes":"Energetic editing, youth rebellion."},
-    "polaroid_nostalgia": {"label":"Polaroid Nostalgia","tokens":["polaroid","instant film","light leaks","vintage colors","snapshot aesthetic","authentic moments"],"script_notes":"Intimate memories, imperfect beauty."},
-    "fashion_editorial": {"label":"Fashion Editorial","tokens":["high fashion","editorial lighting","stark backgrounds","dramatic poses","vogue aesthetic","model photography"],"script_notes":"Striking poses, visual impact."},
-    "music_video_glam": {"label":"Music Video Glam","tokens":["music video","lens flares","smoke machines","dramatic lighting","performance shots","glamorous"],"script_notes":"Star power, visual spectacle."},
-    "pixel_art_retro": {"label":"Pixel Art Retro","tokens":["pixel art","8-bit aesthetic","retro gaming","limited palette","chunky pixels","nostalgic"],"script_notes":"Gaming nostalgia, simplified forms."},
-    "comic_book_pop": {"label":"Comic Book Pop","tokens":["comic book style","bold outlines","halftone dots","speech bubbles","pop art colors","dynamic panels"],"script_notes":"Sequential energy, graphic impact."},
-    "renaissance_painting": {"label":"Renaissance Painting","tokens":["renaissance","chiaroscuro","oil painting","classical composition","religious light","old masters"],"script_notes":"Timeless beauty, dramatic lighting."},
-    "soviet_propaganda": {"label":"Soviet Constructivism","tokens":["constructivism","red and black","bold geometry","propaganda poster","worker imagery","revolutionary"],"script_notes":"Bold graphics, ideological power."},
-    "japanese_woodblock": {"label":"Japanese Woodblock","tokens":["ukiyo-e","woodblock print","flat perspective","nature scenes","edo period","stylized waves"],"script_notes":"Elegant simplicity, natural beauty."},
-    "miami_vice": {"label":"Miami Vice","tokens":["miami vice","pastel suits","sunset colors","palm trees","speedboats","80s glamour","tropical noir"],"script_notes":"Sun-soaked crime, style over substance."},
-    # v1.5.7: Additional styles
-    "noir_classic": {"label":"Noir Classic","tokens":["1940s film noir","fedora hats","trench coats","venetian blinds","cigarette smoke","rain-slicked streets","black and white","hard boiled detective"],"script_notes":"Classic detective genre, moral ambiguity, femme fatale."},
-    "noir_neo": {"label":"Neo Noir","tokens":["neo noir","modern noir","neon and shadow","urban nightscape","contemporary crime","stylized violence","no hats","no trenchcoats","sleek modern"],"script_notes":"Modern crime drama aesthetics, stylish but grounded."},
-    "glitch_art": {"label":"Glitch Art","tokens":["glitch art","data corruption","pixel sorting","RGB split","digital artifacts","scan lines","VHS damage","broken signal"],"script_notes":"Digital decay, technological anxiety, broken beauty."},
-    "lo_fi_bedroom": {"label":"Lo-Fi Bedroom","tokens":["lo-fi aesthetic","warm lamp light","cozy bedroom","soft textures","vintage electronics","plants","warm grain","intimate space"],"script_notes":"Intimate, comfortable, nostalgic warmth."},
-    "brutalist_concrete": {"label":"Brutalist Concrete","tokens":["brutalist architecture","raw concrete","geometric shadows","monumental scale","cold modernism","stark angles","urban fortress"],"script_notes":"Imposing structures, human vs architecture tension."},
-    "acid_trip": {"label":"Acid Trip","tokens":["psychedelic","kaleidoscopic patterns","color distortion","melting reality","fractal geometry","saturated hues","visual hallucination"],"script_notes":"Reality bending, sensory overload, altered states."},
-    "french_new_wave": {"label":"French New Wave","tokens":["nouvelle vague","jump cuts","natural light","parisian streets","handheld camera","intellectual cool","cigarette aesthetic","black and white option"],"script_notes":"Rule-breaking editing, philosophical undertones, effortless style."},
-    "afrofuturism": {"label":"Afrofuturism","tokens":["afrofuturism","african patterns","futuristic technology","cosmic imagery","gold accents","ancestral future","wakanda aesthetic"],"script_notes":"Heritage meets tomorrow, empowered futures, cultural pride."},
-    "silent_film_era": {"label":"Silent Film Era","tokens":["silent film","sepia tone","iris shots","intertitles","theatrical acting","vintage vignette","1920s aesthetic","expressionist shadows"],"script_notes":"Exaggerated emotion, visual storytelling, nostalgic charm."},
-    # v1.5.9.1: Puppet & Animation styles
-    "muppet_show": {"label":"Muppet Show","tokens":["jim henson muppets","felt puppet","googly eyes","fabric texture","theatrical stage","warm lighting","expressive puppet faces","handcrafted aesthetic"],"script_notes":"Warm comedy, vaudeville energy, breaking fourth wall."},
-    "claymation": {"label":"Claymation","tokens":["claymation","stop motion clay","plasticine texture","aardman style","fingerprint details","smooth animation","tactile characters","handmade charm"],"script_notes":"Tactile humor, physical comedy, Wallace and Gromit vibes."},
-    "thunderbirds": {"label":"Thunderbirds","tokens":["supermarionation","1960s puppet","marionette strings visible","retro futurism","practical miniatures","wooden movement","tracy island aesthetic"],"script_notes":"Retro sci-fi heroics, dramatic rescues, stiff-upper-lip."},
-    "spitting_image": {"label":"Spitting Image","tokens":["latex puppet","caricature","satirical puppet","grotesque features","exaggerated expressions","political satire","rubber mask aesthetic"],"script_notes":"Sharp satire, exaggerated features, biting commentary."},
-    "team_america": {"label":"Team America","tokens":["team america puppets","action movie parody","marionette action","miniature explosions","puppet violence","satirical patriotism","string puppets"],"script_notes":"Action parody, irreverent humor, puppet chaos."},
-}
-
-def style_tokens(key: str) -> List[str]:
-    return STYLE_PRESETS.get(key, {"tokens":[key]}).get("tokens", [key])
-
-def style_script_notes(key: str) -> str:
-    return STYLE_PRESETS.get(key, {"script_notes":""}).get("script_notes","")
+# v1.6.9: build_beat_grid imported from services.audio_service
+# v1.6.9: STYLE_PRESETS, style_tokens, style_script_notes imported from services.styles
 
 # ========= App =========
 app = FastAPI()
@@ -665,93 +102,8 @@ app = FastAPI()
 async def startup_event():
     fetch_live_pricing()
 
-def now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S")
-
-def require_key(name: str, value: str):
-    if not value:
-        raise HTTPException(500, f"Missing {name}. Put it in env var {name} and restart.")
-
-def fal_headers() -> Dict[str,str]:
-    require_key("FAL_KEY", FAL_KEY)
-    return {"Authorization": f"Key {FAL_KEY}", "Content-Type": "application/json"}
-
-def call_img2img_editor(editor_key: str, prompt: str, image_urls: List[str], aspect: str) -> str:
-    """
-    Returns the first output image URL or raises HTTPException.
-    editor_key: flux2_edit | nanobanana_edit | seedream45_edit
-    """
-    require_key("FAL_KEY", FAL_KEY)
-
-    if not image_urls:
-        raise HTTPException(400, "img2img requires at least 1 image_url")
-
-    # keep within model limits (flux2 max 4, seedream max 10, nanobanana accepts list)
-    if editor_key == "flux2_edit":
-        endpoint = FAL_FLUX2_EDIT
-        payload = {
-            "prompt": prompt,
-            "image_urls": image_urls[:4],
-            "guidance_scale": 2.5,
-            "num_inference_steps": 28,
-            "output_format": "png",
-            "aspect_ratio": "16:9" if aspect == "horizontal" else ("9:16" if aspect == "vertical" else "1:1"),
-        }
-    elif editor_key == "nanobanana_edit":
-        endpoint = FAL_NANOBANANA_EDIT
-        aspect_ratio = "16:9" if aspect == "horizontal" else ("9:16" if aspect == "vertical" else "1:1")
-        image_size = "landscape_16_9" if aspect == "horizontal" else ("portrait_16_9" if aspect == "vertical" else "square_hd")
-        payload = {
-            "prompt": prompt,
-            "image_urls": image_urls[:4],
-            "output_format": "png",
-            "aspect_ratio": aspect_ratio,
-            "image_size": image_size,  # v1.5.3: Try both params
-            "resolution": "2K",
-        }
-        print(f"[INFO] NanoBanana img2img: aspect={aspect}, aspect_ratio={aspect_ratio}, image_size={image_size}, ref_count={len(image_urls)}")
-    elif editor_key == "seedream45_edit":
-        endpoint = FAL_SEEDREAM45_EDIT
-        aspect_ratio = "16:9" if aspect == "horizontal" else ("9:16" if aspect == "vertical" else "1:1")
-        image_size = "landscape_16_9" if aspect == "horizontal" else ("portrait_16_9" if aspect == "vertical" else "square_hd")
-        # v1.5.3: Try multiple params - Seedream may use different ones
-        width = 1920 if aspect == "horizontal" else (1080 if aspect == "vertical" else 1024)
-        height = 1080 if aspect == "horizontal" else (1920 if aspect == "vertical" else 1024)
-        payload = {
-            "prompt": prompt,
-            "image_urls": image_urls[:10],
-            "num_images": 1,
-            "aspect_ratio": aspect_ratio,
-            "image_size": image_size,
-            "width": width,
-            "height": height,
-        }
-        print(f"[INFO] Seedream img2img: aspect={aspect}, {width}x{height}, ref_count={len(image_urls)}")
-    else:
-        raise HTTPException(400, f"Unknown img2img_editor: {editor_key}")
-
-    # v1.6.1: Retry on 502
-    def do_request():
-        r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
-        if r.status_code >= 500:
-            # Server error - worth retrying
-            raise HTTPException(502, f"img2img editor failed: {r.status_code} {r.text[:500]}")
-        elif r.status_code >= 400:
-            # Client error (4xx) - don't retry, fail immediately
-            raise HTTPException(r.status_code, f"img2img editor failed: {r.status_code} {r.text[:500]}")
-        return r
-    
-    r = retry_on_502(do_request)()
-    
-    out = r.json()
-    img_url = None
-    if isinstance(out, dict) and isinstance(out.get("images"), list) and out["images"]:
-        img_url = out["images"][0].get("url")
-
-    if not img_url:
-        raise HTTPException(502, "img2img editor returned no image url")
-
-    return img_url
+# v1.6.9: now_iso, require_key, fal_headers imported from services.config
+# v1.6.9: call_img2img_editor imported from services.render_service
 
 # v1.6.6: Internal helper to generate wardrobe preview (reused by scene render and standalone endpoint)
 def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict, scene: Dict, wardrobe_text: str, scene_num: str) -> Optional[str]:
@@ -791,8 +143,8 @@ def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict,
     
     prompt = f"{base_style}, {wardrobe_text}, {decor_prompt}, consistent identity, high quality"
     
-    result_url = call_img2img_editor(editor, prompt, [ref_url], aspect)
-    track_cost(f"fal-ai/{editor}", 1, state=state)
+    result_url = call_img2img_editor(editor, prompt, [ref_url], aspect, project_id)
+    track_cost(f"fal-ai/{editor}", 1, state=state, note="wardrobe")
     
     # Store as wardrobe_ref
     scene_title = sanitize_filename(scene.get("title", scene_id), 20)
@@ -800,486 +152,24 @@ def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict,
     
     return local_path
 
-def safe_float(x, default=0.0) -> float:
-    try: return float(x)
-    except Exception: return float(default)
+# v1.6.9: safe_float imported from services.config
+# v1.6.9: normalize_structure_type imported from services.project_service
 
-def normalize_structure_type(s: str) -> str:
-    if not s: return "verse"
-    t = s.strip().lower()
-    for k in ["intro","verse","prechorus","chorus","bridge","breakdown","outro","instrumental"]:
-        if t.startswith(k): return k
-    if t.startswith("pre-chorus") or t.startswith("pre chorus"): return "prechorus"
-    return "verse"
+# ========= Persistence (v1.6.9: now imported from services.project_service) =========
+# project_path, load_project, recover_orphaned_renders, save_project, new_project
+# are all imported from services.project_service
+# locked_render_models, locked_editor_key, locked_model_key imported from services.config
 
-# ========= Persistence =========
-def project_path(pid: str) -> Path:
-    return PROJECTS_DIR / f"{pid}.json"
+# v1.6.9: t2i_endpoint_and_payload, call_t2i_with_retry imported from services.render_service
+# v1.6.9: normalize_audio_understanding imported from services.audio_service
+# v1.6.9: LLM functions imported from services.llm_service
+#   extract_json_object, call_openai_json, call_claude_json,
+#   CLAUDE_MODEL_CASCADE, call_llm_json
 
-def load_project(pid: str) -> Dict[str,Any]:
-    p = project_path(pid)
-    if not p.exists(): raise HTTPException(404, "Project not found")
-    state = json.loads(p.read_text(encoding="utf-8"))
-    # v1.12: Validate on load (non-strict, just warn)
-    is_valid, errors = validate_project_state(state, strict=False)
-    if not is_valid:
-        print(f"[WARN] Project {pid} has validation errors: {errors}")
-    
-    # v1.5.0: Recover orphaned render files
-    state = recover_orphaned_renders(state, pid)
-    
-    return state
-
-def recover_orphaned_renders(state: Dict[str,Any], pid: str) -> Dict[str,Any]:
-    """v1.5.0: Find render files on disk that aren't in the JSON and recover them."""
-    recovered = 0
-    shots = state.get("storyboard", {}).get("shots", [])
-    
-    for shot in shots:
-        shot_id = shot.get("shot_id")
-        render = shot.get("render", {})
-        
-        # Skip if already has a valid render
-        if render.get("image_url") and render.get("status") == "done":
-            continue
-        
-        # Look for matching files in renders directory
-        # Pattern: {project_id}_{shot_id}_*.png/jpg/webp
-        for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-            for f in RENDERS_DIR.glob(f"{pid}_{shot_id}*{ext}"):
-                if f.exists():
-                    local_url = f"/renders/{f.name}"
-                    shot["render"] = {
-                        "status": "done",
-                        "image_url": local_url,
-                        "model": "recovered",
-                        "ref_images_used": 0,
-                        "error": None
-                    }
-                    recovered += 1
-                    print(f"[INFO] Recovered render for {shot_id}: {local_url}")
-                    break
-            if shot.get("render", {}).get("status") == "done":
-                break
-    
-    # Also recover scene decor refs
-    scenes = state.get("cast_matrix", {}).get("scenes", [])
-    for scene in scenes:
-        scene_id = scene.get("scene_id")
-        decor_refs = scene.get("decor_refs", [])
-        
-        # Skip if already has decor refs
-        if decor_refs and decor_refs[0]:
-            continue
-        
-        # Look for scene decor files
-        for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-            for f in RENDERS_DIR.glob(f"{pid}_{scene_id}_decor*{ext}"):
-                if f.exists():
-                    local_url = f"/renders/{f.name}"
-                    scene["decor_refs"] = [local_url]
-                    recovered += 1
-                    print(f"[INFO] Recovered decor for {scene_id}: {local_url}")
-                    break
-            if scene.get("decor_refs"):
-                break
-    
-    if recovered > 0:
-        print(f"[INFO] Recovered {recovered} orphaned renders for project {pid}")
-        # Save the recovered state
-        save_project(state, validate=False)
-    
-    return state
-
-def save_project(state: Dict[str,Any], validate: bool = True, force: bool = False) -> None:
-    """Save project state. 
-    v1.5.9.1: Blocks save if version mismatch unless force=True.
-    """
-    pid = state["project"]["id"]
-    
-    # v1.5.9.1: Version mismatch detection - disable autosave for old projects
-    created_version = state["project"].get("created_version")
-    if created_version and created_version != VERSION and not force:
-        print(f"[WARN] Version mismatch: project created with {created_version}, current app is {VERSION}")
-        print(f"[WARN] Autosave disabled. Use 'force=True' or update project version to save.")
-        return
-    
-    state["project"]["updated_at"] = now_iso()
-    # v1.12: Validate before save
-    if validate:
-        is_valid, errors = validate_project_state(state, strict=False)
-        if not is_valid:
-            print(f"[WARN] Saving project {pid} with validation errors: {errors}")
-    project_path(pid).write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-    
-    # v1.5.9.1: Also save to project folder
-    try:
-        project_folder = get_project_folder(state)
-        project_json_path = project_folder / "project.json"
-        project_json_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
-    except Exception as e:
-        print(f"[WARN] Failed to save to project folder: {e}")
-
-def new_project(title: str, style_preset: str, aspect: str, llm: str = "claude", image_model_choice: str = "nanobanana", video_model: str = "none", use_whisper: bool = False) -> Dict[str,Any]:
-    pid = str(uuid.uuid4())
-    
-    state = {
-        "project": {
-            "id": pid,
-            "title": title,
-            "style_preset": style_preset,
-            "aspect": aspect,
-            "llm": (llm or "claude"),
-            "image_model_choice": image_model_choice,
-            "video_model": video_model,  # v1.5.6: placeholder for future video models
-            "use_whisper": use_whisper,  # v1.5.6: enhanced audio DNA extraction
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-            "created_version": VERSION,  # v1.6.1: Track which version created this project
-            "render_models": locked_render_models(image_model_choice),
-            "style_locked": False,  # v1.6.1: True after first cast ref generated
-            "style_lock_image": None,  # v1.6.1: First generated ref becomes style anchor
-        },
-        "audio_dna": None,
-        "cast": [],
-        "storyboard": {"sequences": [], "shots": []},
-
-        "cast_matrix": {
-        "character_refs": {},   # cast_id -> { "ref_a": url, "ref_b": url }
-        "scenes": []            # list of {scene_id, prompt, decor_refs:[], output_url}
-        },
-    }
-    
-    # v1.5.9.1: Create project folder with title and version
-    project_folder = get_project_folder(state)
-    print(f"[INFO] Created project folder: {project_folder}")
-    
-    return state
-
-# v1.5.6: Get project folder path
-def project_folder_path(pid: str) -> Path:
-    return PROJECTS_DIR / pid
-
-# v1.5.6: Get project renders folder
-def project_renders_path(pid: str) -> Path:
-    folder = PROJECTS_DIR / pid / "renders"
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
-
-# v1.5.6: Get project audio folder
-def project_audio_path(pid: str) -> Path:
-    folder = PROJECTS_DIR / pid / "audio"
-    folder.mkdir(parents=True, exist_ok=True)
-    return folder
-
-# ========= Render model hard-lock (v1.11) =========
-def locked_render_models(image_model_choice: str) -> Dict[str, Any]:
-    """
-    Hard-lock render models for ALL still images based on project image generator selection.
-    UI values: nanobanana | seedream45 | flux2
-    """
-    m = (image_model_choice or "nanobanana").strip().lower()
-    if m in ("flux2", "flux_2"):
-        return {
-            "image_model": "fal-ai/flux-2",
-            "identity_model": None,              # Redux removed in v1.11
-            "img2img_editor": "flux2_edit",
-            "available_editors": ["flux2_edit", "nanobanana_edit", "seedream45_edit"],
-        }
-    if m in ("seedream45", "seedream_45", "seedream", "seedream4.5", "seedream4_5"):
-        return {
-            "image_model": "fal-ai/bytedance/seedream/v4.5/text-to-image",
-            "identity_model": None,              # Redux removed in v1.11
-            "img2img_editor": "seedream45_edit",
-            "available_editors": ["seedream45_edit", "nanobanana_edit", "flux2_edit"],
-        }
-    # default: Nano Banana Pro
-    return {
-        "image_model": "fal-ai/nano-banana-pro",
-        "identity_model": None,                  # Redux removed in v1.11
-        "img2img_editor": "nanobanana_edit",
-        "available_editors": ["nanobanana_edit", "seedream45_edit", "flux2_edit"],
-    }
-
-def locked_editor_key(state: Dict[str, Any]) -> str:
-    rm = (state.get("project") or {}).get("render_models") or {}
-    return (rm.get("img2img_editor") or "nanobanana_edit").strip()
-
-def t2i_endpoint_and_payload(state: Dict[str,Any], prompt: str, image_size: str) -> (str, Dict[str,Any], str):
-    """
-    Return (endpoint, payload, model_name) for the locked T2I model.
-    """
-    rm = (state.get("project") or {}).get("render_models") or {}
-    model = (rm.get("image_model") or "fal-ai/nano-banana-pro").strip().lower()
-
-    if model == "fal-ai/flux-2":
-        return (FAL_FLUX2_T2I, {"prompt": prompt, "image_size": image_size}, "fal-ai/flux-2")
-    if model == "fal-ai/bytedance/seedream/v4.5/text-to-image":
-        return (FAL_SEEDREAM45_T2I, {"prompt": prompt, "image_size": image_size}, "fal-ai/bytedance/seedream/v4.5/text-to-image")
-
-    # nano-banana-pro
-    aspect = (state.get("project") or {}).get("aspect") or "horizontal"
-    aspect_ratio = "16:9" if aspect=="horizontal" else ("9:16" if aspect=="vertical" else "1:1")
-    return (FAL_NANOBANANA_PRO_T2I, {"prompt": prompt, "aspect_ratio": aspect_ratio, "resolution": "1K"}, "fal-ai/nano-banana-pro")
-
-def call_t2i_with_retry(state: Dict[str, Any], prompt: str, image_size: str) -> Tuple[str, str]:
-    """v1.6.1: Call T2I endpoint with retry on 5xx. Returns (image_url, model_name)."""
-    endpoint, payload, model_name = t2i_endpoint_and_payload(state, prompt, image_size)
-    
-    def do_request():
-        r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
-        if r.status_code >= 500:
-            # Server error - worth retrying
-            raise HTTPException(502, f"T2I failed: {r.status_code} {r.text[:500]}")
-        elif r.status_code >= 400:
-            # Client error (4xx) - don't retry
-            raise HTTPException(r.status_code, f"T2I failed: {r.status_code} {r.text[:500]}")
-        out = r.json()
-        if isinstance(out.get("images"), list) and out["images"] and out["images"][0].get("url"):
-            return out["images"][0]["url"]
-        raise HTTPException(502, "T2I returned no image url")
-    
-    url = retry_on_502(do_request)()
-    return url, model_name
-
-
-# ========= Audio normalizer =========
-def normalize_audio_understanding(raw: Dict[str,Any]) -> Dict[str,Any]:
-    """Parse audio-understanding output and extract structured data."""
-    out = raw.get("output")
-    duration = raw.get("duration_sec") or raw.get("duration")
-    
-    # Try to parse JSON from output
-    parsed = None
-    if isinstance(out, str) and out.strip():
-        # Try to extract JSON from markdown code block or raw text
-        text = out.strip()
-        # Remove markdown code block if present
-        if text.startswith("```json"):
-            text = text[7:]
-        elif text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-        
-        # Try to parse as JSON
-        try:
-            parsed = json.loads(text)
-        except:
-            # Try to extract JSON object from text
-            json_str = _extract_json_object(text)
-            if json_str:
-                try:
-                    parsed = json.loads(json_str)
-                except:
-                    pass
-    
-    # If we got parsed JSON, extract fields
-    if parsed and isinstance(parsed, dict):
-        return {
-            "meta": {
-                "bpm": parsed.get("bpm"),
-                "style": parsed.get("style") if isinstance(parsed.get("style"), list) else ([parsed.get("style")] if parsed.get("style") else []),
-                "language": parsed.get("language"),
-                "duration_sec": parsed.get("duration_sec") or parsed.get("duration") or duration,
-            },
-            "structure": parsed.get("structure") or [],
-            "dynamics": parsed.get("dynamics") or [],
-            "lyrics": parsed.get("lyrics") or [],
-            "vocal_delivery": parsed.get("vocal_delivery") or {},
-            "story_arc": parsed.get("story_arc") or {"theme":"", "start":"", "conflict":"", "end":""},
-            "raw_text_blob": out,
-            "source": {"provider":"fal", "model":"fal-ai/audio-understanding", "created_at": now_iso()},
-        }
-    
-    # Fallback: store raw output
-    if isinstance(out, str) and out.strip():
-        return {
-            "meta": {"bpm": None, "style": [], "language": None, "duration_sec": duration},
-            "structure": [],
-            "dynamics": [],
-            "lyrics": [],
-            "vocal_delivery": {},
-            "story_arc": {"theme":"", "start":"", "conflict":"", "end":""},
-            "raw_text_blob": out,
-            "source": {"provider":"fal", "model":"fal-ai/audio-understanding", "created_at": now_iso()},
-        }
-    return {"raw": raw, "source": {"provider":"fal","model":"fal-ai/audio-understanding","created_at":now_iso()}}
-
-# ========= LLM JSON extraction/repair =========
-def _extract_json_object(text: str) -> str:
-    if not text: return ""
-    s = text.strip()
-    if s.startswith("{") and s.endswith("}"): return s
-    start = s.find("{")
-    if start == -1: return ""
-    depth = 0
-    for i in range(start, len(s)):
-        ch = s[i]
-        if ch == "{": depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return s[start:i+1]
-    return ""
-
-def call_openai_json(system: str, user: str, model: str="gpt-4o-mini", temperature: float=0.0) -> Dict[str,Any]:
-    require_key("OPENAI_KEY", OPENAI_KEY)
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type":"application/json"}
-    payload = {
-        "model": model,
-        "temperature": temperature,
-        "response_format": {"type":"json_object"},
-        "messages": [{"role":"system","content":system},{"role":"user","content":user}],
-    }
-    r = requests.post(url, headers=headers, json=payload, timeout=180)
-    if r.status_code >= 300:
-        raise HTTPException(502, f"OpenAI failed: {r.status_code} {r.text}")
-    txt = r.json()["choices"][0]["message"]["content"]
-    return json.loads(txt)
-
-def call_claude_json(system: str, user: str, model: str="claude-sonnet-4-5-20250929", max_tokens: int=5000) -> Dict[str,Any]:
-    require_key("CLAUDE_KEY", CLAUDE_KEY)
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {"x-api-key": CLAUDE_KEY, "anthropic-version":"2023-06-01", "content-type":"application/json"}
-    payload = {
-        "model": model,
-        "max_tokens": int(max_tokens),
-        "temperature": 0.7,
-        "system": system,
-        "messages": [{"role":"user","content":user}],
-    }
-    r = requests.post(url, headers=headers, json=payload, timeout=240)
-    if r.status_code >= 300:
-        raise HTTPException(502, f"Claude failed: {r.status_code} {r.text}")
-    data = r.json()
-    blocks = data.get("content", [])
-    txt = "".join([b.get("text","") for b in blocks if b.get("type")=="text"]).strip()
-    try:
-        (UPLOADS_DIR / f"claude_last_raw_{int(time.time())}.txt").write_text(txt or "<EMPTY>", encoding="utf-8")
-    except Exception:
-        pass
-    js_txt = _extract_json_object(txt)
-    if js_txt:
-        try: return json.loads(js_txt)
-        except Exception: pass
-    if OPENAI_KEY and txt:
-        return call_openai_json("You are a strict JSON repair tool. Output ONLY a single valid JSON object.", txt)
-    raise HTTPException(502, "Claude returned no JSON. Check data/uploads/claude_last_raw_*.txt")
-
-# v1.6.1: Claude model cascade (most capable → fastest)
-CLAUDE_MODEL_CASCADE = [
-    "claude-sonnet-4-5-20250929",      # Primary - latest Sonnet 4.5
-    "claude-3-5-sonnet-latest",        # Latest stable
-    "claude-3-5-sonnet-20241022",      # Older specific
-    "claude-3-haiku-20240307",         # Fast fallback
-]
-
-def call_llm_json(system: str, user: str, preferred: str = "claude", max_tokens: int = 5000, state: Dict = None) -> Dict[str, Any]:
-    """v1.6.1: Call LLM with Claude cascade fallback. OpenAI only as last resort. Tracks cost automatically."""
-    require_key("CLAUDE_KEY", CLAUDE_KEY)
-    last_error = None
-    
-    # Try Claude cascade first
-    for model in CLAUDE_MODEL_CASCADE:
-        try:
-            print(f"[INFO] Calling Claude API with {model}...")
-            result = call_claude_json(system, user, model=model, max_tokens=max_tokens)
-            # v1.6.1: Track cost for successful call
-            track_cost(model, 1, state=state)
-            return result
-        except HTTPException as e:
-            last_error = e
-            print(f"[WARN] {model} failed ({e.status_code}): {str(e.detail)[:100]}")
-            if e.status_code == 400:
-                # Bad request - don't retry with different model
-                break
-        except Exception as e:
-            last_error = HTTPException(502, str(e))
-            print(f"[WARN] {model} failed: {str(e)[:100]}")
-    
-    # OpenAI as absolute last resort
-    if OPENAI_KEY:
-        try:
-            print(f"[INFO] All Claude models failed, trying OpenAI as last resort...")
-            result = call_openai_json(system, user)
-            track_cost("gpt-4o-mini", 1, state=state)
-            return result
-        except Exception as e:
-            print(f"[ERROR] OpenAI also failed: {str(e)[:100]}")
-    
-    raise last_error or HTTPException(502, "All LLM providers failed")
-
-# ========= Cast helpers =========
-def find_cast(state: Dict[str,Any], cast_id: str) -> Optional[Dict[str,Any]]:
-    for c in state.get("cast", []):
-        if c.get("cast_id") == cast_id:
-            return c
-    return None
-
-def cast_ref_urls(cast: Dict[str,Any]) -> List[str]:
-    """Get reference image URLs for API calls (prefers fal_url for remote processing)."""
-    refs = cast.get("reference_images") or []
-    urls = []
-    for r in refs:
-        # v1.4.9: Prefer fal_url for API calls, fallback to url
-        url = r.get("fal_url") or r.get("url")
-        if url:
-            urls.append(url)
-    return urls[:3]
-
-
-
-def get_identity_url(state: Dict[str,Any], cast_id: str) -> Optional[str]:
-    """Prefer canonical styled ref_a from cast_matrix; fallback to first uploaded reference image."""
-    cm = state.get("cast_matrix") or {}
-    refs = (cm.get("character_refs") or {}).get(cast_id) or {}
-    if isinstance(refs, dict) and refs.get("ref_a"):
-        return refs["ref_a"]
-    c = find_cast(state, cast_id)
-    if not c:
-        return None
-    urls = cast_ref_urls(c)
-    return urls[0] if urls else None
-# ========= Prompt builder =========
-def energy_tokens(e: float) -> List[str]:
-    e = float(e or 0.5)
-    if e <= 0.3: return ["quiet","minimal motion","slow camera"]
-    if e <= 0.7: return ["steady motion","medium intensity"]
-    return ["high intensity","aggressive motion","dramatic lighting"]
-
-def build_prompt(state: Dict[str,Any], shot: Dict[str,Any]) -> str:
-    st = state["project"]["style_preset"]
-    aspect = state["project"]["aspect"]
-    parts: List[str] = []
-    parts += style_tokens(st)
-    parts += [f"aspect {aspect}"]
-    parts += energy_tokens(shot.get("energy",0.5))
-    parts += [shot.get("prompt_base",""), shot.get("camera_language",""), shot.get("environment","")]
-    if isinstance(shot.get("symbolic_elements"), list):
-        parts += shot["symbolic_elements"]
-    parts += ["no text","no watermark","no subtitles","no logo"]
-    return ", ".join([p.strip() for p in parts if p and str(p).strip()])
-
-# ========= UI Template =========
-TEMPLATES_DIR = BASE / "templates"
-STATIC_DIR = BASE / "static"
-TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
-STATIC_DIR.mkdir(parents=True, exist_ok=True)
-
-INDEX_HTML_PATH = TEMPLATES_DIR / "index.html"
-STYLE_CSS_PATH = STATIC_DIR / "style.css"
-APP_JS_PATH = STATIC_DIR / "app.js"
-LOGO_PATH = STATIC_DIR / "logo.png"
-
-def build_index_html() -> str:
-    tpl = INDEX_HTML_PATH.read_text(encoding="utf-8")
-    style_opts = "\n".join([f'<option value="{k}">{v["label"]}</option>' for k,v in STYLE_PRESETS.items()])
-    return (tpl
-            .replace("__STYLE_OPTIONS__", style_opts)
-            .replace("__DEFAULT_AUDIO_PROMPT__", DEFAULT_AUDIO_PROMPT.replace("`","'")))
+# v1.6.9: Cast helpers imported from services.cast_service
+# v1.6.9: get_identity_url imported from services.cast_service
+# v1.6.9: energy_tokens, build_prompt imported from services.render_service
+# v1.7.0: UI helpers imported from services.ui_service
 
 @app.get("/static/style.css")
 def static_css():
@@ -1289,9 +179,7 @@ def static_css():
 @app.get("/static/app.js")
 def static_js():
     from fastapi.responses import Response
-    js = APP_JS_PATH.read_text(encoding="utf-8")
-    js = js.replace("__DEFAULT_AUDIO_PROMPT__", DEFAULT_AUDIO_PROMPT.replace("`","'"))
-    return Response(content=js, media_type="application/javascript")
+    return Response(content=get_app_js_content(), media_type="application/javascript")
 
 # v1.5.4: Serve logo
 @app.get("/static/logo.png")
@@ -1309,31 +197,9 @@ def serve_render(filepath: str):
     if not file_path.exists():
         raise HTTPException(404, f"Render not found: {filepath}")
     
-    # Determine media type
-    media_type = "image/png"
-    if filepath.endswith(".jpg") or filepath.endswith(".jpeg"):
-        media_type = "image/jpeg"
-    elif filepath.endswith(".webp"):
-        media_type = "image/webp"
-    elif filepath.endswith(".mp4"):
-        media_type = "video/mp4"
-    elif filepath.endswith(".mp3"):
-        media_type = "audio/mpeg"
-    
-    return FileResponse(str(file_path), media_type=media_type)
+    return FileResponse(str(file_path), media_type=get_media_type(filepath))
 
-def resolve_render_path(url_or_path: str) -> Path:
-    """v1.6.1: Resolve /renders/ URL or path to actual file path."""
-    filepath = url_or_path
-    if filepath.startswith("/renders/"):
-        filepath = filepath[9:]  # Strip /renders/
-    
-    # filepath can be: "filename.png" (legacy) or "projects/Title_vX/renders/filename.png" (v1.6.1)
-    if filepath.startswith("projects/"):
-        return DATA / filepath
-    else:
-        return RENDERS_DIR / filepath
-
+# v1.6.9: resolve_render_path imported from services.render_service
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -1581,17 +447,20 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
     if use_whisper:
         print(f"[INFO] Using Whisper for enhanced transcription...")
         try:
-            whisper_r = requests.post(FAL_WHISPER, headers=fal_headers(), json={
+            whisper_payload = {
                 "audio_url": audio_url,
                 "task": "transcribe",
                 "language": "en",  # Auto-detect if empty
                 "chunk_level": "segment",
                 "version": "3"
-            }, timeout=300)
+            }
+            whisper_r = requests.post(FAL_WHISPER, headers=fal_headers(), json=whisper_payload, timeout=300)
             
             if whisper_r.status_code < 300:
                 whisper_data = whisper_r.json()
                 whisper_transcript = whisper_data.get("text", "")
+                # Log Whisper call
+                save_fal_debug("whisper", FAL_WHISPER, whisper_payload, whisper_data, project_id)
                 # Track Whisper cost
                 duration_for_cost = local_duration or 180
                 track_cost("fal-ai/whisper", int(duration_for_cost), state=state)
@@ -1601,7 +470,8 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
         except Exception as e:
             print(f"[WARN] Whisper error: {e}")
 
-    r = requests.post(FAL_AUDIO, headers=fal_headers(), json={"audio_url":audio_url, "prompt":prompt}, timeout=300)
+    audio_payload = {"audio_url":audio_url, "prompt":prompt}
+    r = requests.post(FAL_AUDIO, headers=fal_headers(), json=audio_payload, timeout=300)
     # v1.5.1: Track cost based on duration ($0.01 per 5 seconds)
     duration_for_cost = local_duration or 180  # Fallback to 3 min estimate
     audio_cost_units = max(1, int(duration_for_cost / 5))  # 5-second units
@@ -1611,6 +481,8 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
         return JSONResponse({"error":"fal audio-understanding failed","status":r.status_code,"body":r.text}, status_code=502)
 
     raw = r.json()
+    # Log audio understanding call
+    save_fal_debug("audio_understanding", FAL_AUDIO, audio_payload, raw, project_id)
     audio_dna = normalize_audio_understanding(raw)
     
     # v1.5.6: Enhance lyrics with Whisper transcript if available
@@ -1697,6 +569,35 @@ def api_update_bpm(project_id: str, payload: Dict[str, Any]):
     save_project(state)
     
     return {"bpm": new_bpm, "beat_grid": beat_grid}
+
+# v1.7.0: Manually update lyrics (for hallucinated transcriptions)
+@app.patch("/api/project/{project_id}/audio/lyrics")
+def api_update_lyrics(project_id: str, payload: Dict[str, Any]):
+    """Manually update lyrics when auto-transcription fails."""
+    state = load_project(project_id)
+    
+    new_lyrics = payload.get("lyrics", "").strip()
+    if not new_lyrics:
+        raise HTTPException(400, "Lyrics cannot be empty")
+    
+    audio_dna = state.get("audio_dna")
+    if not audio_dna:
+        raise HTTPException(400, "No audio DNA found")
+    
+    # Update lyrics - convert to list format
+    lines = [l.strip() for l in new_lyrics.split("\n") if l.strip()]
+    audio_dna["lyrics"] = [{"text": line} for line in lines]
+    audio_dna["lyrics_source"] = "manual"
+    
+    # Also store raw text for display
+    audio_dna["lyrics_text"] = new_lyrics
+    
+    print(f"[INFO] Lyrics updated manually: {len(lines)} lines")
+    
+    state["audio_dna"] = audio_dna
+    save_project(state)
+    
+    return {"lyrics_count": len(lines), "source": "manual"}
 
 # ========= API: Cast =========
 @app.post("/api/project/{project_id}/cast")
@@ -1878,14 +779,17 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
             ref_images.append(style_lock_url)
             print(f"[INFO] Using style lock image for consistency: {style_lock_url}")
 
-    prompt_a = f"{base_style}, {extra_prefix}full body, standing, three-quarter view, slight angle, neutral pose, clean background, consistent identity, {negatives}"
-    prompt_b = f"{base_style}, {extra_prefix}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
+    # v1.7.0: Style consistency instruction - tell AI to match style, not add the person
+    style_instruction = "match the artistic style and color palette of the second reference image, do not include or blend the person from that reference, " if style_lock_url else ""
+    
+    prompt_a = f"{base_style}, {extra_prefix}{style_instruction}full body, standing, three-quarter view, slight angle, neutral pose, clean background, consistent identity, {negatives}"
+    prompt_b = f"{base_style}, {extra_prefix}{style_instruction}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
 
-    # v1.5.8: Track costs to session only during generation (not to state, to avoid race)
-    ref_a_url = call_img2img_editor(editor, prompt_a, ref_images, aspect)
-    track_cost(f"fal-ai/{editor}", 1)  # Session only
-    ref_b_url = call_img2img_editor(editor, prompt_b, ref_images, aspect)
-    track_cost(f"fal-ai/{editor}", 1)  # Session only
+    # v1.7.0: Generate refs and track costs to session (state tracking done after lock)
+    ref_a_url = call_img2img_editor(editor, prompt_a, ref_images, aspect, project_id)
+    track_cost(f"fal-ai/{editor}", 1)  # Session tracking
+    ref_b_url = call_img2img_editor(editor, prompt_b, ref_images, aspect, project_id)
+    track_cost(f"fal-ai/{editor}", 1)  # Session tracking
 
     # v1.6.1: Store locally with friendly names in project folder
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)
@@ -1903,12 +807,13 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
             fresh_state["project"]["style_lock_image"] = ref_a
             print(f"[INFO] Style locked to first generated ref: {ref_a}")
 
-        # Track costs to fresh state (2 renders done)
+        # v1.7.0: Track costs to fresh state (2 renders done, 2 separate entries)
         editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
         if "costs" not in fresh_state:
             fresh_state["costs"] = {"total": 0.0, "calls": []}
         fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + (editor_cost * 2), 4)
-        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost * 2, 4), "ts": time.time()})
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time(), "note": "ref_a"})
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time(), "note": "ref_b"})
 
         save_project(fresh_state)
 
@@ -1947,8 +852,8 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
     else:
         prompt = f"{base_style}, {extra_prefix}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
 
-    new_url = call_img2img_editor(editor, prompt, [refs[0]], aspect)
-    track_cost(f"fal-ai/{editor}", 1)  # Session only
+    new_url = call_img2img_editor(editor, prompt, [refs[0]], aspect, project_id)
+    track_cost(f"fal-ai/{editor}", 1)  # Session tracking
     
     # v1.5.9.1: Store with friendly name in project folder
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)
@@ -1960,12 +865,12 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
         char_refs = fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {}).setdefault(cast_id, {})
         char_refs[f"ref_{ref_type}"] = local_path
 
-        # Track cost to fresh state
+        # v1.7.0: Track cost to fresh state
         editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
         if "costs" not in fresh_state:
             fresh_state["costs"] = {"total": 0.0, "calls": []}
         fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
-        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time()})
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time(), "note": f"ref_{ref_type}"})
 
         save_project(fresh_state)
 
@@ -2153,7 +1058,7 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
     
     # Render 1 establishing shot per scene - v1.5.9.1: with retry
     url, model_name = call_t2i_with_retry(state, base_prompt, image_size)
-    track_cost(f"fal-ai/{model_name}", 1, state=state)
+    track_cost(f"fal-ai/{model_name}", 1, state=state, note="scene_decor")
     
     # v1.5.9.1: Friendly name with scene number
     scene_num = scene_id.replace("scene_", "")
@@ -2172,7 +1077,7 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
             "wide establishing shot",
         ])
         alt_url, alt_model = call_t2i_with_retry(state, alt_base_prompt, image_size)
-        track_cost(f"fal-ai/{alt_model}", 1, state=state)
+        track_cost(f"fal-ai/{alt_model}", 1, state=state, note="scene_decor_alt")
         decor_alt = download_image_locally(alt_url, project_id, f"{scene_id}_decor_alt", state=state, friendly_name=f"Sce{scene_num}_DecorAlt")
         print(f"[INFO] Generated alt decor for {scene_id}")
 
@@ -2235,7 +1140,7 @@ def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict
     # Generate using text-to-image
     model = locked_model_key(state)
     result_url = call_txt2img(model, full_prompt, aspect, state)
-    track_cost(f"fal-ai/{model}", 1, state=state)
+    track_cost(f"fal-ai/{model}", 1, state=state, note="scene_decor_gen")
 
     # Save locally
     scene_num = scene_id.replace("scene_", "")
@@ -2300,7 +1205,8 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
     
     # Call img2img
     editor = locked_editor_key(state)
-    result_url = call_img2img_editor(editor, full_prompt, [uploaded_url], aspect, state)
+    result_url = call_img2img_editor(editor, full_prompt, [uploaded_url], aspect, project_id)
+    track_cost(f"fal-ai/{editor}", 1, state=state, note="scene_decor_edit")
     
     # v1.5.9.1: Save locally with friendly name
     scene_num = scene_id.replace("scene_", "")
@@ -2483,12 +1389,14 @@ def api_castmatrix_generate_scene(project_id: str, scene_id: str, payload: Dict[
     decor_refs = []
     for dp in decor_prompts:
         # v1.5.9.1: Use retry helper
-        url, _model_name = call_t2i_with_retry(state, dp, image_size)
+        url, model_name = call_t2i_with_retry(state, dp, image_size)
+        track_cost(f"fal-ai/{model_name}", 1, state=state, note="scene_decor_t2i")
         decor_refs.append(url)
 
     # decor_2: same room, different viewpoint (img2img off decor_1)
     decor2_prompt = base_prompt + ", same room, different camera angle, different framing, consistent architecture, consistent lighting"
-    decor_2 = call_img2img_editor(editor, decor2_prompt, [decor_refs[0]], aspect)
+    decor_2 = call_img2img_editor(editor, decor2_prompt, [decor_refs[0]], aspect, project_id)
+    track_cost(f"fal-ai/{editor}", 1, state=state, note="scene_decor_i2i")
     decor_refs.append(decor_2)
 
 # ========= API: Build sequences =========
@@ -3061,6 +1969,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         scenes = state.get("cast_matrix", {}).get("scenes", [])
         if seq_idx < len(scenes):
             scene = scenes[seq_idx]
+            # Add decor ref
             decor_refs = scene.get("decor_refs") or []
             for dref in decor_refs[:1]:  # Use first scene render
                 if dref and not dref.startswith("/renders/"):
@@ -3071,41 +1980,62 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
                         try:
                             uploaded_url = fal_client.upload_file(str(local_file))
                             ref_images.append(uploaded_url)
+                            print(f"[INFO] Added decor ref for scene {seq_idx}")
                         except:
                             pass
+            
+            # v1.7.0: Add wardrobe_ref for outfit consistency
+            wardrobe_ref = scene.get("wardrobe_ref")
+            if wardrobe_ref:
+                if not wardrobe_ref.startswith("/renders/"):
+                    ref_images.append(wardrobe_ref)
+                    print(f"[INFO] Added wardrobe ref (external URL)")
+                else:
+                    local_file = resolve_render_path(wardrobe_ref)
+                    if local_file.exists():
+                        try:
+                            uploaded_url = fal_client.upload_file(str(local_file))
+                            ref_images.append(uploaded_url)
+                            print(f"[INFO] Added wardrobe ref for scene {seq_idx}")
+                        except Exception as e:
+                            print(f"[WARN] Failed to upload wardrobe ref: {e}")
     
-    # 2. v1.6.1: Get BOTH cast member reference images (ref_a and ref_b) - use resolve_render_path
+    # 2. v1.7.0: Select ref_a (full body) or ref_b (close-up) based on shot's camera_language
+    camera_lang = (shot.get("camera_language") or "").lower()
+    use_closeup = any(kw in camera_lang for kw in ["close-up", "closeup", "close up", "portrait", "head shot", "headshot", "face", "eyes"])
+    ref_key = "ref_b" if use_closeup else "ref_a"
+    print(f"[INFO] Shot {shot_id} cast={cast_ids}, camera='{camera_lang}' -> using {ref_key}")
+    
     char_refs = state.get("cast_matrix", {}).get("character_refs", {})
+    print(f"[DEBUG] Available char_refs: {list(char_refs.keys())}")
+    
     for cast_id in cast_ids[:2]:
         refs = char_refs.get(cast_id, {})
-        # Add ref_a
-        if refs.get("ref_a"):
-            ref_url = refs["ref_a"]
-            if ref_url and not ref_url.startswith("/renders/"):
-                ref_images.append(ref_url)
-            elif ref_url and ref_url.startswith("/renders/"):
-                local_file = resolve_render_path(ref_url)
-                if local_file.exists():
-                    try:
-                        uploaded_url = fal_client.upload_file(str(local_file))
-                        ref_images.append(uploaded_url)
-                        print(f"[INFO] Uploaded cast ref_a for {cast_id}")
-                    except Exception as e:
-                        print(f"[WARN] Failed to upload cast ref_a: {e}")
-        # Add ref_b
-        if refs.get("ref_b"):
-            ref_url = refs["ref_b"]
-            if ref_url and not ref_url.startswith("/renders/"):
-                ref_images.append(ref_url)
-            elif ref_url and ref_url.startswith("/renders/"):
-                local_file = resolve_render_path(ref_url)
-                if local_file.exists():
-                    try:
-                        uploaded_url = fal_client.upload_file(str(local_file))
-                        ref_images.append(uploaded_url)
-                        print(f"[INFO] Uploaded cast ref_b for {cast_id}")
-                    except Exception as e:
-                        print(f"[WARN] Failed to upload cast ref_b: {e}")
+        if not refs:
+            print(f"[WARN] No refs found for cast_id={cast_id}")
+            continue
+            
+        ref_url = refs.get(ref_key) or refs.get("ref_a")  # Fallback to ref_a if ref_b missing
+        if not ref_url:
+            print(f"[WARN] No {ref_key} or ref_a URL for cast_id={cast_id}")
+            continue
+            
+        print(f"[DEBUG] Cast {cast_id} {ref_key} URL: {ref_url[:60]}...")
+        
+        if not ref_url.startswith("/renders/"):
+            ref_images.append(ref_url)
+            print(f"[INFO] Using external URL for cast {cast_id}")
+        else:
+            local_file = resolve_render_path(ref_url)
+            if local_file.exists():
+                try:
+                    uploaded_url = fal_client.upload_file(str(local_file))
+                    ref_images.append(uploaded_url)
+                    print(f"[INFO] Uploaded cast {ref_key} for {cast_id}: {uploaded_url[:60]}...")
+                except Exception as e:
+                    print(f"[ERROR] Failed to upload cast {ref_key} for {cast_id}: {e}")
+            else:
+                print(f"[ERROR] Local file not found: {local_file}")
     
     img_url = None
     model_name = "unknown"
@@ -3114,9 +2044,9 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
     if ref_images:
         editor = locked_editor_key(state)
         try:
-            img_url = call_img2img_editor(editor, prompt, ref_images, aspect)
+            img_url = call_img2img_editor(editor, prompt, ref_images, aspect, project_id)
             model_name = editor
-            track_cost(f"fal-ai/{editor}", 1, state=state)  # v1.4.9: Track cost to state
+            track_cost(f"fal-ai/{editor}", 1, state=state, note="shot_render")
         except Exception as e:
             print(f"[WARN] img2img failed, falling back to t2i: {e}")
             ref_images = []  # Clear to trigger t2i fallback
@@ -3127,7 +2057,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         endpoint, payload, model_name = t2i_endpoint_and_payload(state, prompt, image_size)
         
         r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
-        track_cost(f"fal-ai/{model_name}", 1, state=state)  # v1.4.9: Track cost to state
+        track_cost(f"fal-ai/{model_name}", 1, state=state, note="shot_render_t2i")
         
         if r.status_code >= 300:
             shot["render"] = {"status":"error","image_url":None,"model":model_name,"error":r.text}
@@ -3262,8 +2192,8 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     # Call img2img
     editor = locked_editor_key(state)
     try:
-        img_url = call_img2img_editor(editor, full_prompt, ref_images, aspect)
-        track_cost(f"fal-ai/{editor}", 1, state=state)
+        img_url = call_img2img_editor(editor, full_prompt, ref_images, aspect, project_id)
+        track_cost(f"fal-ai/{editor}", 1, state=state, note="shot_edit")
     except Exception as e:
         raise HTTPException(502, f"Edit failed: {str(e)}")
     
@@ -3475,11 +2405,20 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         ]
         
         print(f"[INFO] Running final export...")
+        print(f"[DEBUG] FFmpeg cmd: {' '.join(final_cmd[:10])}...")
+        print(f"[DEBUG] Concat file: {concat_file}")
+        print(f"[DEBUG] Audio path: {audio_path}")
+        print(f"[DEBUG] Output path: {output_path}")
+        
         result = subprocess.run(final_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
+            # Extract actual error from stderr (skip version info)
+            stderr_lines = result.stderr.split('\n')
+            error_lines = [l for l in stderr_lines if 'error' in l.lower() or 'invalid' in l.lower() or 'no such' in l.lower()]
+            error_msg = '\n'.join(error_lines) if error_lines else result.stderr[-500:]
             print(f"[ERROR] FFmpeg failed: {result.stderr}")
-            raise HTTPException(500, f"FFmpeg export failed: {result.stderr[:500]}")
+            raise HTTPException(500, f"FFmpeg export failed: {error_msg}")
         
         # Calculate scene transitions for info
         scene_transitions = sum(1 for i in range(1, len(clip_paths)) if clip_paths[i-1]["seq_id"] != clip_paths[i]["seq_id"])

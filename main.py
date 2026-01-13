@@ -1,6 +1,17 @@
-import os, json, time, uuid, asyncio
+import os, json, time, uuid, asyncio, threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
+
+# v1.6.5: Lock for thread-safe project file access (prevents race condition on parallel renders)
+PROJECT_LOCKS: Dict[str, threading.Lock] = {}
+PROJECT_LOCKS_LOCK = threading.Lock()  # Lock to create per-project locks
+
+def get_project_lock(project_id: str) -> threading.Lock:
+    """Get or create a lock for a specific project."""
+    with PROJECT_LOCKS_LOCK:
+        if project_id not in PROJECT_LOCKS:
+            PROJECT_LOCKS[project_id] = threading.Lock()
+        return PROJECT_LOCKS[project_id]
 
 import requests
 import fal_client
@@ -1834,25 +1845,25 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
     ref_a = download_image_locally(ref_a_url, project_id, f"cast_{cast_id}_ref_a", state=state, friendly_name=f"Cast_{cast_name}_RefA")
     ref_b = download_image_locally(ref_b_url, project_id, f"cast_{cast_id}_ref_b", state=state, friendly_name=f"Cast_{cast_name}_RefB")
 
-    # v1.5.8: CRITICAL FIX - Reload state before save to prevent race condition
-    # Another request may have modified the state while we were generating refs
-    fresh_state = load_project(project_id)
-    fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {})[cast_id] = {"ref_a": ref_a, "ref_b": ref_b}
-    
-    # v1.6.1: Set style lock if this is the first generated ref
-    if not fresh_state["project"].get("style_lock_image"):
-        fresh_state["project"]["style_locked"] = True
-        fresh_state["project"]["style_lock_image"] = ref_a
-        print(f"[INFO] Style locked to first generated ref: {ref_a}")
-    
-    # Track costs to fresh state (2 renders done)
-    editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
-    if "costs" not in fresh_state:
-        fresh_state["costs"] = {"total": 0.0, "calls": []}
-    fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + (editor_cost * 2), 4)
-    fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost * 2, 4), "ts": time.time()})
-    
-    save_project(fresh_state)
+    # v1.6.5: Thread-safe save with lock
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {})[cast_id] = {"ref_a": ref_a, "ref_b": ref_b}
+
+        # v1.6.1: Set style lock if this is the first generated ref
+        if not fresh_state["project"].get("style_lock_image"):
+            fresh_state["project"]["style_locked"] = True
+            fresh_state["project"]["style_lock_image"] = ref_a
+            print(f"[INFO] Style locked to first generated ref: {ref_a}")
+
+        # Track costs to fresh state (2 renders done)
+        editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + (editor_cost * 2), 4)
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost * 2, 4), "ts": time.time()})
+
+        save_project(fresh_state)
 
     return {"cast_id": cast_id, "editor": editor, "ref_a": ref_a, "ref_b": ref_b, "style_locked": fresh_state["project"].get("style_locked", False)}
 
@@ -1896,19 +1907,20 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)
     local_path = download_image_locally(new_url, project_id, f"cast_{cast_id}_ref_{ref_type}", state=state, friendly_name=f"Cast_{cast_name}_Ref{ref_type.upper()}")
     
-    # v1.5.8: Reload state before save to prevent race condition
-    fresh_state = load_project(project_id)
-    char_refs = fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {}).setdefault(cast_id, {})
-    char_refs[f"ref_{ref_type}"] = local_path
-    
-    # Track cost to fresh state
-    editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
-    if "costs" not in fresh_state:
-        fresh_state["costs"] = {"total": 0.0, "calls": []}
-    fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
-    fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time()})
-    
-    save_project(fresh_state)
+    # v1.6.5: Thread-safe save with lock
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        char_refs = fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {}).setdefault(cast_id, {})
+        char_refs[f"ref_{ref_type}"] = local_path
+
+        # Track cost to fresh state
+        editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time()})
+
+        save_project(fresh_state)
 
     return {"cast_id": cast_id, "ref_type": ref_type, "url": local_path}   
 
@@ -2117,12 +2129,18 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
         decor_alt = download_image_locally(alt_url, project_id, f"{scene_id}_decor_alt", state=state, friendly_name=f"Sce{scene_num}_DecorAlt")
         print(f"[INFO] Generated alt decor for {scene_id}")
 
-    # Save to scene
-    scene["decor_refs"] = decor_refs
-    if decor_alt:
-        scene["decor_alt"] = decor_alt
-    save_project(state)
-    
+    # v1.6.5: Thread-safe save with lock
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_cm = fresh_state.get("cast_matrix") or {}
+        fresh_scenes = fresh_cm.get("scenes") or []
+        fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
+        if fresh_scene:
+            fresh_scene["decor_refs"] = decor_refs
+            if decor_alt:
+                fresh_scene["decor_alt"] = decor_alt
+            save_project(fresh_state)
+
     return {"scene_id": scene_id, "decor_refs": decor_refs, "decor_alt": decor_alt}
 
 # v1.6.5: Generate alt decor for a scene
@@ -2165,11 +2183,17 @@ def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict
     scene_title = sanitize_filename(scene.get("title", scene_id), 20)
     local_path = download_image_locally(result_url, project_id, f"scene_{scene_id}_decor_alt", state=state, friendly_name=f"Sce{scene_num}_{scene_title}_DecorAlt")
 
-    # Update scene
-    scene["decor_alt"] = local_path
-    if alt_prompt:
-        scene["decor_alt_prompt"] = alt_prompt
-    save_project(state, force=True)
+    # v1.6.5: Thread-safe save with lock
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_cm = fresh_state.get("cast_matrix") or {}
+        fresh_scenes = fresh_cm.get("scenes") or []
+        fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
+        if fresh_scene:
+            fresh_scene["decor_alt"] = local_path
+            if alt_prompt:
+                fresh_scene["decor_alt_prompt"] = alt_prompt
+            save_project(fresh_state, force=True)
 
     print(f"[INFO] Generated alt decor for {scene_id}")
     return {"scene_id": scene_id, "decor_alt": local_path}
@@ -2222,9 +2246,17 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
     # v1.5.9.1: Save locally with friendly name
     scene_num = scene_id.replace("scene_", "")
     local_url = download_image_locally(result_url, project_id, f"{scene_id}_edit", state=state, friendly_name=f"Sce{scene_num}_Edit")
-    scene["decor_refs"] = [local_url]
-    save_project(state)
-    
+
+    # v1.6.5: Thread-safe save with lock
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_cm = fresh_state.get("cast_matrix") or {}
+        fresh_scenes = fresh_cm.get("scenes") or []
+        fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
+        if fresh_scene:
+            fresh_scene["decor_refs"] = [local_url]
+            save_project(fresh_state)
+
     return {"scene_id": scene_id, "image_url": local_url}
 
 # v1.6.1: Update scene wardrobe
@@ -3088,15 +3120,24 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
             friendly_name = shot_id
         img_url = download_image_locally(img_url, project_id, shot_id, state=state, friendly_name=friendly_name)
 
-    shot["render"] = {
+    render_result = {
         "status":"done" if img_url else "error",
         "image_url": img_url,
         "model": model_name,
         "ref_images_used": len(ref_images),
         "error": None if img_url else "No image url found"
     }
-    save_project(state)
-    return {"shot_id": shot_id, "prompt": prompt, "image_url": img_url, "ref_images_used": len(ref_images), "result": shot["render"]}
+
+    # v1.6.5: Thread-safe save - reload state, update shot, save atomically
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_shots = fresh_state.get("storyboard", {}).get("shots", [])
+        fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
+        if fresh_shot:
+            fresh_shot["render"] = render_result
+            save_project(fresh_state)
+
+    return {"shot_id": shot_id, "prompt": prompt, "image_url": img_url, "ref_images_used": len(ref_images), "result": render_result}
 
 
 # v1.5.3: Edit a rendered shot with custom prompt and extra cast refs
@@ -3207,8 +3248,8 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
             friendly_name = f"{shot_id}_edit"
         img_url = download_image_locally(img_url, project_id, f"{shot_id}_edit", state=state, friendly_name=friendly_name)
     
-    # Update shot render
-    shot["render"] = {
+    # v1.6.5: Thread-safe save - reload state, update shot, save atomically
+    render_result = {
         "status": "done" if img_url else "error",
         "image_url": img_url,
         "model": editor,
@@ -3217,8 +3258,15 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
         "extra_cast": extra_cast,
         "error": None if img_url else "Edit failed"
     }
-    save_project(state)
-    
+
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_shots = fresh_state.get("storyboard", {}).get("shots", [])
+        fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
+        if fresh_shot:
+            fresh_shot["render"] = render_result
+            save_project(fresh_state)
+
     return {
         "shot_id": shot_id,
         "prompt": full_prompt,

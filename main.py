@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jsonschema import validate, ValidationError, Draft202012Validator
 
 # ========= Version =========
-VERSION = "1.6.5"
+VERSION = "1.6.6"
 
 # ========= v1.6.1: Retry Helper =========
 def retry_on_502(func: Callable, max_retries: int = 3, delay: float = 2.0):
@@ -752,6 +752,53 @@ def call_img2img_editor(editor_key: str, prompt: str, image_urls: List[str], asp
         raise HTTPException(502, "img2img editor returned no image url")
 
     return img_url
+
+# v1.6.6: Internal helper to generate wardrobe preview (reused by scene render and standalone endpoint)
+def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict, scene: Dict, wardrobe_text: str, scene_num: str) -> Optional[str]:
+    """Generate wardrobe preview: lead cast ref_a composited with scene decor and wardrobe.
+    Returns local path or None if no cast ref available."""
+    editor = locked_editor_key(state)
+    cm = state.get("cast_matrix") or {}
+    
+    # Find lead cast for this scene
+    lead_cast_id = scene.get("cast", [None])[0] if scene.get("cast") else None
+    if not lead_cast_id:
+        # Fallback to first cast
+        cast_list = state.get("cast", [])
+        lead_cast_id = cast_list[0].get("cast_id") if cast_list else None
+    
+    if not lead_cast_id:
+        return None  # No cast available
+    
+    # Get cast ref_a
+    char_refs = cm.get("character_refs", {}).get(lead_cast_id, {})
+    ref_a = char_refs.get("ref_a")
+    if not ref_a:
+        return None  # No reference image
+    
+    # Upload ref if local
+    ref_url = ref_a
+    if ref_a.startswith("/renders/"):
+        local_file = resolve_render_path(ref_a)
+        if local_file.exists():
+            ref_url = fal_client.upload_file(str(local_file))
+    
+    # Build prompt: character in wardrobe with scene decor context
+    style = state["project"]["style_preset"]
+    aspect = state["project"]["aspect"]
+    base_style = ", ".join(style_tokens(style))
+    decor_prompt = scene.get("prompt", "")[:200]  # Truncate for safety
+    
+    prompt = f"{base_style}, {wardrobe_text}, {decor_prompt}, consistent identity, high quality"
+    
+    result_url = call_img2img_editor(editor, prompt, [ref_url], aspect)
+    track_cost(f"fal-ai/{editor}", 1, state=state)
+    
+    # Store as wardrobe_ref
+    scene_title = sanitize_filename(scene.get("title", scene_id), 20)
+    local_path = download_image_locally(result_url, project_id, f"scene_{scene_id}_wardrobe", state=state, friendly_name=f"Sce{scene_num}_{scene_title}_Wardrobe")
+    
+    return local_path
 
 def safe_float(x, default=0.0) -> float:
     try: return float(x)
@@ -2129,6 +2176,16 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
         decor_alt = download_image_locally(alt_url, project_id, f"{scene_id}_decor_alt", state=state, friendly_name=f"Sce{scene_num}_DecorAlt")
         print(f"[INFO] Generated alt decor for {scene_id}")
 
+    # v1.6.6: Auto-generate wardrobe preview if wardrobe is defined
+    wardrobe_ref = None
+    wardrobe_text = scene.get("wardrobe", "").strip()
+    if wardrobe_text:
+        try:
+            wardrobe_ref = _generate_wardrobe_ref_internal(project_id, scene_id, state, scene, wardrobe_text, scene_num)
+            print(f"[INFO] Generated wardrobe preview for {scene_id}")
+        except Exception as e:
+            print(f"[WARN] Failed to generate wardrobe preview for {scene_id}: {e}")
+
     # v1.6.5: Thread-safe save with lock
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
@@ -2139,9 +2196,11 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
             fresh_scene["decor_refs"] = decor_refs
             if decor_alt:
                 fresh_scene["decor_alt"] = decor_alt
+            if wardrobe_ref:
+                fresh_scene["wardrobe_ref"] = wardrobe_ref
             save_project(fresh_state)
 
-    return {"scene_id": scene_id, "decor_refs": decor_refs, "decor_alt": decor_alt}
+    return {"scene_id": scene_id, "decor_refs": decor_refs, "decor_alt": decor_alt, "wardrobe_ref": wardrobe_ref}
 
 # v1.6.5: Generate alt decor for a scene
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/decor_alt")
@@ -2317,11 +2376,11 @@ def api_castmatrix_scene_wardrobe_lock(project_id: str, scene_id: str, payload: 
     return {"scene_id": scene_id, "wardrobe_locked": locked}
 
 # v1.6.2: Generate wardrobe preview image (cast ref_a + decor + wardrobe)
+# v1.6.6: Refactored to use _generate_wardrobe_ref_internal helper
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/wardrobe_ref")
 def api_castmatrix_scene_wardrobe_ref(project_id: str, scene_id: str):
     """Generate a wardrobe preview: lead cast ref_a composited with scene decor and wardrobe."""
     state = load_project(project_id)
-    editor = locked_editor_key(state)
     require_key("FAL_KEY", FAL_KEY)
     
     cm = state.get("cast_matrix") or {}
@@ -2334,50 +2393,19 @@ def api_castmatrix_scene_wardrobe_ref(project_id: str, scene_id: str):
     if not wardrobe:
         raise HTTPException(400, "Scene has no wardrobe defined")
     
-    # Find lead cast for this scene
-    lead_cast_id = scene.get("cast", [None])[0] if scene.get("cast") else None
-    if not lead_cast_id:
-        # Fallback to first cast
-        cast_list = state.get("cast", [])
-        lead_cast_id = cast_list[0].get("cast_id") if cast_list else None
+    scene_num = scene_id.replace("scene_", "")
+    local_path = _generate_wardrobe_ref_internal(project_id, scene_id, state, scene, wardrobe, scene_num)
     
-    if not lead_cast_id:
-        raise HTTPException(400, "No cast available for wardrobe preview")
+    if not local_path:
+        raise HTTPException(400, "No cast reference available for wardrobe preview")
     
-    # Get cast ref_a
-    char_refs = cm.get("character_refs", {}).get(lead_cast_id, {})
-    ref_a = char_refs.get("ref_a")
-    if not ref_a:
-        raise HTTPException(400, "Lead cast has no reference image")
-    
-    # Upload ref if local
-    ref_url = ref_a
-    if ref_a.startswith("/renders/"):
-        local_file = resolve_render_path(ref_a)
-        if local_file.exists():
-            ref_url = fal_client.upload_file(str(local_file))
-    
-    # Build prompt: character in wardrobe with scene decor context
-    style = state["project"]["style_preset"]
-    aspect = state["project"]["aspect"]
-    base_style = ", ".join(style_tokens(style))
-    decor_prompt = scene.get("prompt", "")[:200]  # Truncate for safety
-    
-    prompt = f"{base_style}, {wardrobe}, {decor_prompt}, consistent identity, high quality"
-    
-    result_url = call_img2img_editor(editor, prompt, [ref_url], aspect)
-    track_cost(f"fal-ai/{editor}", 1, state=state)
-    
-    # Store as wardrobe_ref
-    scene_title = sanitize_filename(scene.get("title", scene_id), 20)
-    local_path = download_image_locally(result_url, project_id, f"scene_{scene_id}_wardrobe", state=state, friendly_name=f"Sce_{scene_title}_Wardrobe")
-    
-    # Reload and save
-    fresh_state = load_project(project_id)
-    fresh_scene = next((s for s in fresh_state.get("cast_matrix", {}).get("scenes", []) if s.get("scene_id")==scene_id), None)
-    if fresh_scene:
-        fresh_scene["wardrobe_ref"] = local_path
-    save_project(fresh_state)
+    # v1.6.5: Thread-safe save with lock
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_scene = next((s for s in fresh_state.get("cast_matrix", {}).get("scenes", []) if s.get("scene_id")==scene_id), None)
+        if fresh_scene:
+            fresh_scene["wardrobe_ref"] = local_path
+        save_project(fresh_state)
     
     print(f"[INFO] Generated wardrobe preview for {scene_id}")
     return {"scene_id": scene_id, "wardrobe_ref": local_path}

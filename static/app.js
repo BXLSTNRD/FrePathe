@@ -1,4 +1,4 @@
-// BXLSTNRD Video Studio v1.6.5
+// BXLSTNRD Video Studio v1.6.6
 
 const DEFAULT_AUDIO_PROMPT = `Analyze this audio and return ONLY a JSON object with this exact structure (no markdown, no prose):
 {
@@ -558,24 +558,33 @@ function updateCollapsibleSections() {
   }
 }
 
-// v1.6.3: Toggle section collapse on header click
+// v1.6.6: Toggle section collapse on header click - handles both card modules and subsections
 function toggleSectionCollapse(sectionId) {
+  // For card modules (audio, cast), the section has id directly
   const section = document.getElementById(sectionId);
-  if (!section) return;
   
-  const isCollapsed = section.classList.contains("collapsed");
-  const content = section.querySelector(".module-content");
+  // For subsections (timeline, shots), we need to find the content element directly
+  let contentElement = null;
+  if (sectionId === "section-timeline") {
+    contentElement = document.getElementById("timelineContainer");
+  } else if (sectionId === "section-shots") {
+    contentElement = document.getElementById("shotsGrid");
+  } else if (section) {
+    contentElement = section.querySelector(".module-content");
+  }
+  
+  const isCollapsed = COLLAPSED_SECTIONS.has(sectionId);
   
   if (isCollapsed) {
     // Expand
-    section.classList.remove("collapsed");
-    if (content) content.style.display = "";
     COLLAPSED_SECTIONS.delete(sectionId);
+    if (section) section.classList.remove("collapsed");
+    if (contentElement) contentElement.style.display = "";
   } else {
     // Collapse
-    section.classList.add("collapsed");
-    if (content) content.style.display = "none";
     COLLAPSED_SECTIONS.add(sectionId);
+    if (section) section.classList.add("collapsed");
+    if (contentElement) contentElement.style.display = "none";
   }
 }
 
@@ -2096,9 +2105,9 @@ function renderShots(state) {
           </div>
           ${hasRender ? `
           <div class="shot-edit-row">
-            <input type="text" class="shot-edit-input" placeholder="Edit prompt..." data-shot-id="${sh.shot_id}" onkeydown="if(event.key==='Enter')quickEditShot('${sh.shot_id}', this.value)"/>
+            <input type="text" class="shot-edit-input" placeholder="Edit prompt..." data-shot-id="${sh.shot_id}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickEditShot('${sh.shot_id}', event.target.value);}"/>
             <button class="shot-ref-btn" onclick="openShotRefPicker('${sh.shot_id}')" title="Add reference">+</button>
-            <button class="shot-edit-go" onclick="quickEditShot('${sh.shot_id}', this.parentElement.querySelector('input').value)" title="Apply edit">→</button>
+            <button class="shot-edit-go" onclick="quickEditShot('${sh.shot_id}', document.querySelector('.shot-edit-input[data-shot-id=\\'${sh.shot_id}\\']').value)" title="Apply edit">→</button>
           </div>
           ` : ''}
         </div>
@@ -2544,7 +2553,7 @@ function updateShotCardImage(shotId, imageUrl) {
     <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${shotId}')" title="Re-render">↻</button>
   `;
 
-  // v1.6.5: Add the edit row below the render if not present
+  // v1.6.6: Add the edit row below the render if not present
   const existingEditRow = card.querySelector('.shot-edit-row');
   if (!existingEditRow) {
     const body = card.querySelector('.shot-card-body');
@@ -2552,9 +2561,9 @@ function updateShotCardImage(shotId, imageUrl) {
       const editRow = document.createElement('div');
       editRow.className = 'shot-edit-row';
       editRow.innerHTML = `
-        <input type="text" class="shot-edit-input" placeholder="Edit prompt..." data-shot-id="${shotId}" onkeydown="if(event.key==='Enter')quickEditShot('${shotId}', this.value)"/>
+        <input type="text" class="shot-edit-input" placeholder="Edit prompt..." data-shot-id="${shotId}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickEditShot('${shotId}', event.target.value);}"/>
         <button class="shot-ref-btn" onclick="openShotRefPicker('${shotId}')" title="Add reference">+</button>
-        <button class="shot-edit-go" onclick="quickEditShot('${shotId}', this.parentElement.querySelector('input').value)" title="Apply edit">→</button>
+        <button class="shot-edit-go" onclick="quickEditShot('${shotId}', document.querySelector('.shot-edit-input[data-shot-id=\\'${shotId}\\']').value)" title="Apply edit">→</button>
       `;
       body.appendChild(editRow);
     }
@@ -2975,7 +2984,22 @@ async function downloadVideo(url, filename) {
 }
 
 // Init - show default state
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   setStatus("Ready", 0);
   renderCastList({ cast: [], cast_matrix: {} });
+  
+  // v1.6.6: If projectId exists (e.g., page reload), restore full state
+  const existingPid = document.getElementById("projectId")?.value?.trim();
+  if (existingPid) {
+    try {
+      await refreshFromServer();
+      if (PROJECT_STATE?.audio_dna) {
+        parseAudioDNA(PROJECT_STATE.audio_dna);
+        updateAudioButtons();
+      }
+      // syncProjectSettings already called in refreshFromServer, includes use_whisper
+    } catch (e) {
+      console.warn("Failed to restore project on page load:", e);
+    }
+  }
 });

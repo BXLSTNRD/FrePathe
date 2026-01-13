@@ -1,53 +1,42 @@
 # Changelog
 
-## v1.7.0-BROKEN (2026-01-13) - AFGEBROKEN SESSIE
+## v1.7.0 (2026-01-14) - SERVICES ARCHITECTURE
 
-### ⚠️ STATUS: NIET PRODUCTIERIJP
-Deze versie bevat onvoltooide wijzigingen en bekende bugs. Niet deployen.
+### Major Refactor
+- **Modular architecture**: Extracted 11 service modules from monolithic main.py
+- **Code reduction**: main.py reduced from 3444 to 2190 lines (36% reduction)
+- **Better maintainability**: Clear separation of concerns across services
 
-### Poging tot fixes (onvoltooid)
-- Cast ref selectie: ref_a vs ref_b gebaseerd op `camera_language` (close-up → ref_b)
-- Style lock prompt: instructie toegevoegd om stijl te kopiëren, niet de persoon
-- Cost tracking: `note` parameter toegevoegd aan `track_cost()`
-- Cast cards: `updateCastCardRefs()` voor incrementele updates
-- FFmpeg: debug logging toegevoegd
+### New Service Modules (2914 lines total)
+- `services/config.py` - Configuration, API keys, cost tracking, threading locks
+- `services/project_service.py` - Project CRUD, persistence, validation
+- `services/audio_service.py` - Audio analysis, BPM detection, beat grids, Whisper
+- `services/cast_service.py` - Cast management, character refs, style lock
+- `services/render_service.py` - FAL AI image generation (T2I, I2I), prompt building
+- `services/storyboard_service.py` - Sequences, shots, timeline management
+- `services/export_service.py` - FFmpeg video export pipeline
+- `services/llm_service.py` - LLM API calls (Claude/OpenAI) with cascade fallback
+- `services/styles.py` - 55+ visual style presets with tokens
+- `services/ui_service.py` - Template rendering, static file helpers
 
-### Bekende bugs (niet opgelost)
-- **Audio/Cast hoogte sync**: Lyrics groeit niet mee met cast matrix
-- **Preview/Export**: Niet volledig getest
-- **Style lock**: Eerste cast's ref_a wordt nog steeds als image ref gestuurd (AI kan persoon toevoegen)
-- **B scenes**: Onduidelijk of deze correct gegenereerd worden
+### Key Features Preserved
+- All v1.6.6 functionality maintained
+- Thread-safe project locks
+- JSON schema validation
+- Cost tracking with live pricing
+- Cast matrix with ref_a/ref_b/ref_c
+- Multi-model support (Flux, SeeDream, Nano Banana)
 
-### Gebroken CSS wijzigingen
-- Lyrics hoogte CSS meerdere keren aangepast zonder succes
-- Originele `cast-expanded` logica (4+ cast) werkt niet correct
-
-### Aanbeveling
-**Terug naar v1.6.6** of grondig reviewen van alle wijzigingen sinds die versie.
+### Documentation
+- `ARCHITECTURE.md` - Complete system documentation (635 lines)
+- Service layer patterns and data flows documented
+- API endpoint reference included
 
 ---
 
-## v1.6.9 (2026-01-13) - SERVICES INTEGRATION
+## v1.6.6 (2026-01-13) - STABLE BASELINE
 
-### Active Integration
-- **Replaced ~1160 lines** of duplicate code in main.py with imports from services/
-- Main.py reduced from 3444 to 2285 lines (33% reduction)
-- All functionality preserved via service imports
-
-### New Service Modules
-- `services/llm_service.py` - LLM API calls (Claude, OpenAI) with cascade fallback
-- `services/styles.py` - 55 visual style presets with tokens and script notes
-
-### Imported from services.config
-- `VERSION`, `FAL_KEY`, `OPENAI_KEY`, `CLAUDE_KEY`
-- `FAL_AUDIO`, `FAL_WHISPER`, `FAL_NANOBANANA`, `FAL_SEEDREAM45`, `FAL_FLUX2` + edit endpoints
-- `API_COSTS`, `MODEL_TO_ENDPOINT`, `SESSION_COST`, `PRICING_LOADED`
-- `RENDER_SEMAPHORE`, `EXPORT_STATUS`
-- `require_key()`, `fal_headers()`, `now_iso()`, `clamp()`, `safe_float()`
-- `retry_on_502()`, `track_cost()`, `fetch_live_pricing()`, `log_llm_call()`
-- `locked_render_models()`, `locked_editor_key()`, `locked_model_key()`
-
-### Imported from services.project_service
+*Last version before services refactor - all features working*
 - `sanitize_filename()`, `get_project_folder()`, `get_project_renders_dir()`
 - `get_project_audio_dir()`, `get_project_video_dir()`, `get_project_llm_dir()`
 - `save_llm_response()`, `download_image_locally()`

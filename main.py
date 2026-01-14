@@ -785,11 +785,11 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
     prompt_a = f"{base_style}, {extra_prefix}{style_instruction}full body, standing, three-quarter view, slight angle, neutral pose, clean background, consistent identity, {negatives}"
     prompt_b = f"{base_style}, {extra_prefix}{style_instruction}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
 
-    # v1.7.0: Generate refs and track costs to session (state tracking done after lock)
+    # v1.7.0: Generate refs and track costs
     ref_a_url = call_img2img_editor(editor, prompt_a, ref_images, aspect, project_id)
-    track_cost(f"fal-ai/{editor}", 1)  # Session tracking
+    track_cost(f"fal-ai/{editor}", 1, state=state, note="cast_ref_a")
     ref_b_url = call_img2img_editor(editor, prompt_b, ref_images, aspect, project_id)
-    track_cost(f"fal-ai/{editor}", 1)  # Session tracking
+    track_cost(f"fal-ai/{editor}", 1, state=state, note="cast_ref_b")
 
     # v1.6.1: Store locally with friendly names in project folder
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)
@@ -853,7 +853,7 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
         prompt = f"{base_style}, {extra_prefix}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
 
     new_url = call_img2img_editor(editor, prompt, [refs[0]], aspect, project_id)
-    track_cost(f"fal-ai/{editor}", 1)  # Session tracking
+    track_cost(f"fal-ai/{editor}", 1, state=state, note=f"cast_ref_{ref_type}")
     
     # v1.5.9.1: Store with friendly name in project folder
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)

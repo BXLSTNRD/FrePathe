@@ -561,7 +561,8 @@ button.tiny {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  flex-grow: 1;
+  flex: 1;  /* v1.7.0: Use flex: 1 instead of flex-grow: 1 to fill available space */
+  min-height: 0;  /* v1.7.0: Allow flexbox shrinking */
 }
 
 .info-pills-row {
@@ -627,24 +628,24 @@ button.tiny {
   white-space: nowrap;
 }
 
-/* Patch 2: Lyrics - fixed height when cast <= 3, grows when cast > 3 */
+/* v1.7.0: Lyrics - fixed height when cast <= 3, grows when cast > 3 */
 .lyrics-pill {
   flex: 0 0 auto;  /* Don't grow by default */
   min-height: 0;
-  max-height: none !important;
   display: flex;
   flex-direction: column;
 }
 
-/* v1.5.9: When cast-expanded class is added (4+ cast), lyrics can grow */
+/* v1.7.0: When cast-expanded class is added (4+ cast), lyrics grows to fill space */
 .cast-expanded .lyrics-pill {
   flex: 1;
+  min-height: 200px;  /* Maintain minimum size */
 }
 
 .lyrics-content {
   font-size: 12px;
   color: var(--text);
-  height: 200px;  /* v1.5.9: Fixed height by default */
+  height: 200px;  /* Fixed height by default */
   max-height: 200px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -653,9 +654,9 @@ button.tiny {
   word-wrap: break-word;
 }
 
-/* v1.5.9: When expanded, lyrics can grow */
+/* v1.7.0: When expanded, lyrics fills all available space */
 .cast-expanded .lyrics-content {
-  height: auto;
+  height: 100%;  /* Fill parent container */
   max-height: none;
   flex: 1;
   min-height: 200px;

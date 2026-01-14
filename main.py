@@ -28,6 +28,7 @@ from services.project_service import (
     sanitize_filename,
     get_project_folder, get_project_renders_dir, get_project_audio_dir,
     get_project_video_dir, get_project_llm_dir, save_llm_response,
+    get_project_director_dir, save_director_log,
     download_image_locally,
     validate_against_schema, validate_shot, validate_sequence, validate_project_state,
     project_path, load_project, recover_orphaned_renders, save_project, new_project,
@@ -106,7 +107,7 @@ async def startup_event():
 # v1.6.9: call_img2img_editor imported from services.render_service
 
 # v1.6.6: Internal helper to generate wardrobe preview (reused by scene render and standalone endpoint)
-def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict, scene: Dict, wardrobe_text: str, scene_num: str) -> Optional[str]:
+def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict, scene: Dict, wardrobe_text: str, scene_num: str) -> Tuple[Optional[str], float]:
     """Generate wardrobe preview: lead cast ref_a composited with scene decor and wardrobe.
     Returns local path or None if no cast ref available."""
     editor = locked_editor_key(state)
@@ -120,13 +121,13 @@ def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict,
         lead_cast_id = cast_list[0].get("cast_id") if cast_list else None
     
     if not lead_cast_id:
-        return None  # No cast available
+        return (None, 0)  # No cast available
     
     # Get cast ref_a
     char_refs = cm.get("character_refs", {}).get(lead_cast_id, {})
     ref_a = char_refs.get("ref_a")
     if not ref_a:
-        return None  # No reference image
+        return (None, 0)  # No reference image
     
     # Upload ref if local
     ref_url = ref_a
@@ -144,13 +145,14 @@ def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict,
     prompt = f"{base_style}, {wardrobe_text}, {decor_prompt}, consistent identity, high quality"
     
     result_url = call_img2img_editor(editor, prompt, [ref_url], aspect, project_id)
-    track_cost(f"fal-ai/{editor}", 1, state=state, note="wardrobe")
+    editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     
     # Store as wardrobe_ref
     scene_title = sanitize_filename(scene.get("title", scene_id), 20)
     local_path = download_image_locally(result_url, project_id, f"scene_{scene_id}_wardrobe", state=state, friendly_name=f"Sce{scene_num}_{scene_title}_Wardrobe")
     
-    return local_path
+    # v1.7.1: Return (path, cost) tuple for persistence in caller
+    return (local_path, editor_cost)
 
 # v1.6.9: safe_float imported from services.config
 # v1.6.9: normalize_structure_type imported from services.project_service
@@ -962,16 +964,21 @@ def api_castmatrix_autogen_scenes(project_id: str, payload: Dict[str,Any]):
         "- Match the energy level (high energy = dynamic lighting, low = moody)\n"
         "- Consider the structure_type (intro = establishing, chorus = impactful, outro = resolution)\n\n"
         "Each prompt MUST include: location, time of day, camera setup, mood, key props.\n"
-        "These are LOCATION PLATES only - no characters in prompts.\n\n"
-        "ALTERNATIVE DECOR (decor_alt_prompt):\n"
-        "- Use ONLY when narratively justified: flashbacks, dream sequences, parallel timelines, dramatic contrasts\n"
-        "- Examples: Present-day apartment vs childhood home; Glamorous party vs lonely aftermath\n"
-        "- Leave empty string if the scene doesn't need an alternative perspective\n"
-        "- Not every scene needs this - use sparingly for maximum impact\n\n"
-        "WARDROBE: Describe what characters should WEAR in each scene.\n"
-        "- This can OVERRIDE the character's default outfit based on story needs\n"
-        "- Examples: 'elegant evening gowns and tuxedos' for gala, 'casual streetwear' for flashback, 'work uniforms' for job scene\n"
-        "- Leave empty string if default character outfit is appropriate\n"
+        "CRITICAL - EMPTY LOCATION PLATES ONLY:\n"
+        "- These are BACKGROUND PLATES for compositing - NEVER include people, characters, figures, silhouettes, faces, or bodies\n"
+        "- Even if the style guide allows people, IGNORE IT for scene decors - they must be UNINHABITED\n"
+        "- Think: establishing shots BEFORE actors arrive on set\n\n"
+        "ALTERNATIVE DECOR (decor_alt_prompt) - USE SPARINGLY:\n"
+        "- ONLY when story REQUIRES dual locations: flashbacks, dream vs reality, parallel timelines, split perspectives\n"
+        "- Examples: Present apartment vs childhood home; Glamorous party vs abandoned aftermath; Dream world vs real world\n"
+        "- NOT for slight variations - only for narratively essential location contrasts\n"
+        "- Leave empty string for 95% of scenes - this is EXCEPTIONAL\n\n"
+        "WARDROBE - USE EXCEPTIONALLY SPARINGLY:\n"
+        "- ONLY specify when costumes are STORY-CRITICAL and VISUALLY DISTINCT from default: uniforms (firefighter, military, medical), formal events (wedding, gala), period/flashback clothing, dramatic transformations\n"
+        "- NOT for minor variations like 'casual vs neat' or 'disheveled' - use default character appearance\n"
+        "- If you specify wardrobe once (e.g. 'firefighter uniform'), DO NOT repeat it in other scenes unless character changes outfit\n"
+        "- Leave empty string for 80-90% of scenes - characters wear their default look\n"
+        "- Bad: specifying outfit in every scene. Good: 1-2 scenes with story-critical costume changes\n"
         f"Schema:\n{schema_hint}\n"
     )
 
@@ -995,6 +1002,9 @@ def api_castmatrix_autogen_scenes(project_id: str, payload: Dict[str,Any]):
     
     # v1.5.9.1: Save to project folder
     save_llm_response(state, "scenes_autogen", {"response": js})
+    
+    # v1.7.1: Save complete conversation for fine-tuning
+    save_director_log(state, "scenes_autogen", system, user, js)
     
     scenes = js.get("scenes")
     if not isinstance(scenes, list) or len(scenes) != count:
@@ -1041,8 +1051,8 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
     style = state["project"]["style_preset"]
     aspect = state["project"]["aspect"]
 
-    # v1.6.3: CRITICAL - Scene decors must NEVER contain people
-    no_people = "empty location, no people, no person, no human, no figure, no silhouette, no character, no faces, no hands, no body, uninhabited, deserted, vacant space"
+    # v1.7.1: CRITICAL - Scene decors ABSOLUTELY MUST be empty (even if style allows people)
+    no_people = "EMPTY LOCATION, NO PEOPLE, NO PERSON, NO HUMAN, NO FIGURE, NO SILHOUETTE, NO CHARACTER, NO FACES, NO HANDS, NO BODY, NO PARTIAL BODY, UNINHABITED, DESERTED, VACANT SPACE, ESTABLISHING SHOT BEFORE ACTORS ARRIVE"
     
     base_prompt = ", ".join(style_tokens(style) + [
         scene["prompt"],
@@ -1058,7 +1068,7 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
     
     # Render 1 establishing shot per scene - v1.5.9.1: with retry
     url, model_name = call_t2i_with_retry(state, base_prompt, image_size)
-    track_cost(f"fal-ai/{model_name}", 1, state=state, note="scene_decor")
+    scene_decor_cost = API_COSTS.get(f"fal-ai/{model_name}", 0.04)
     
     # v1.5.9.1: Friendly name with scene number
     scene_num = scene_id.replace("scene_", "")
@@ -1067,6 +1077,7 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
 
     # v1.6.2: Render alt decor if prompt exists
     decor_alt = None
+    alt_decor_cost = 0
     alt_prompt = scene.get("decor_alt_prompt", "").strip()
     if alt_prompt:
         alt_base_prompt = ", ".join(style_tokens(style) + [
@@ -1077,21 +1088,22 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
             "wide establishing shot",
         ])
         alt_url, alt_model = call_t2i_with_retry(state, alt_base_prompt, image_size)
-        track_cost(f"fal-ai/{alt_model}", 1, state=state, note="scene_decor_alt")
+        alt_decor_cost = API_COSTS.get(f"fal-ai/{alt_model}", 0.04)
         decor_alt = download_image_locally(alt_url, project_id, f"{scene_id}_decor_alt", state=state, friendly_name=f"Sce{scene_num}_DecorAlt")
         print(f"[INFO] Generated alt decor for {scene_id}")
 
     # v1.6.6: Auto-generate wardrobe preview if wardrobe is defined
     wardrobe_ref = None
+    wardrobe_cost = 0
     wardrobe_text = scene.get("wardrobe", "").strip()
     if wardrobe_text:
         try:
-            wardrobe_ref = _generate_wardrobe_ref_internal(project_id, scene_id, state, scene, wardrobe_text, scene_num)
+            wardrobe_ref, wardrobe_cost = _generate_wardrobe_ref_internal(project_id, scene_id, state, scene, wardrobe_text, scene_num)
             print(f"[INFO] Generated wardrobe preview for {scene_id}")
         except Exception as e:
             print(f"[WARN] Failed to generate wardrobe preview for {scene_id}: {e}")
 
-    # v1.6.5: Thread-safe save with lock
+    # v1.7.1: Thread-safe save with lock + persist costs to fresh_state
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
@@ -1103,7 +1115,20 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
                 fresh_scene["decor_alt"] = decor_alt
             if wardrobe_ref:
                 fresh_scene["wardrobe_ref"] = wardrobe_ref
-            save_project(fresh_state)
+        
+        # v1.7.1: Persist costs to fresh_state
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        ts = time.time()
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{model_name}", "cost": round(scene_decor_cost, 4), "ts": ts, "note": "scene_decor"})
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + scene_decor_cost, 4)
+        if alt_decor_cost > 0:
+            fresh_state["costs"]["calls"].append({"model": f"fal-ai/{alt_model}", "cost": round(alt_decor_cost, 4), "ts": ts, "note": "scene_decor_alt"})
+            fresh_state["costs"]["total"] = round(fresh_state["costs"]["total"] + alt_decor_cost, 4)
+        if wardrobe_cost > 0:
+            fresh_state["costs"]["total"] = round(fresh_state["costs"]["total"] + wardrobe_cost, 4)
+        
+        save_project(fresh_state)
 
     return {"scene_id": scene_id, "decor_refs": decor_refs, "decor_alt": decor_alt, "wardrobe_ref": wardrobe_ref}
 
@@ -1140,14 +1165,14 @@ def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict
     # Generate using text-to-image
     model = locked_model_key(state)
     result_url = call_txt2img(model, full_prompt, aspect, state)
-    track_cost(f"fal-ai/{model}", 1, state=state, note="scene_decor_gen")
+    model_cost = API_COSTS.get(f"fal-ai/{model}", 0.04)
 
     # Save locally
     scene_num = scene_id.replace("scene_", "")
     scene_title = sanitize_filename(scene.get("title", scene_id), 20)
     local_path = download_image_locally(result_url, project_id, f"scene_{scene_id}_decor_alt", state=state, friendly_name=f"Sce{scene_num}_{scene_title}_DecorAlt")
 
-    # v1.6.5: Thread-safe save with lock
+    # v1.7.1: Thread-safe save with lock + persist costs
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
@@ -1157,7 +1182,14 @@ def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict
             fresh_scene["decor_alt"] = local_path
             if alt_prompt:
                 fresh_scene["decor_alt_prompt"] = alt_prompt
-            save_project(fresh_state, force=True)
+        
+        # v1.7.1: Persist costs to fresh_state
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{model}", "cost": round(model_cost, 4), "ts": time.time(), "note": "scene_decor_gen"})
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + model_cost, 4)
+        
+        save_project(fresh_state, force=True)
 
     print(f"[INFO] Generated alt decor for {scene_id}")
     return {"scene_id": scene_id, "decor_alt": local_path}
@@ -1206,13 +1238,13 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
     # Call img2img
     editor = locked_editor_key(state)
     result_url = call_img2img_editor(editor, full_prompt, [uploaded_url], aspect, project_id)
-    track_cost(f"fal-ai/{editor}", 1, state=state, note="scene_decor_edit")
+    editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     
     # v1.5.9.1: Save locally with friendly name
     scene_num = scene_id.replace("scene_", "")
     local_url = download_image_locally(result_url, project_id, f"{scene_id}_edit", state=state, friendly_name=f"Sce{scene_num}_Edit")
 
-    # v1.6.5: Thread-safe save with lock
+    # v1.7.1: Thread-safe save with lock + persist costs
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
@@ -1220,7 +1252,14 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
         fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
         if fresh_scene:
             fresh_scene["decor_refs"] = [local_url]
-            save_project(fresh_state)
+        
+        # v1.7.1: Persist costs to fresh_state
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time(), "note": "scene_decor_edit"})
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
+        
+        save_project(fresh_state)
 
     return {"scene_id": scene_id, "image_url": local_url}
 
@@ -1300,17 +1339,24 @@ def api_castmatrix_scene_wardrobe_ref(project_id: str, scene_id: str):
         raise HTTPException(400, "Scene has no wardrobe defined")
     
     scene_num = scene_id.replace("scene_", "")
-    local_path = _generate_wardrobe_ref_internal(project_id, scene_id, state, scene, wardrobe, scene_num)
+    local_path, wardrobe_cost = _generate_wardrobe_ref_internal(project_id, scene_id, state, scene, wardrobe, scene_num)
     
     if not local_path:
         raise HTTPException(400, "No cast reference available for wardrobe preview")
     
-    # v1.6.5: Thread-safe save with lock
+    # v1.7.1: Thread-safe save with lock + persist costs
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
         fresh_scene = next((s for s in fresh_state.get("cast_matrix", {}).get("scenes", []) if s.get("scene_id")==scene_id), None)
         if fresh_scene:
             fresh_scene["wardrobe_ref"] = local_path
+        
+        # v1.7.1: Persist costs to fresh_state
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["calls"].append({"model": "fal-ai/" + locked_editor_key(fresh_state), "cost": round(wardrobe_cost, 4), "ts": time.time(), "note": "wardrobe"})
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + wardrobe_cost, 4)
+        
         save_project(fresh_state)
     
     print(f"[INFO] Generated wardrobe preview for {scene_id}")
@@ -1488,6 +1534,9 @@ def api_build_sequences(project_id: str, payload: Dict[str,Any]):
     # v1.5.9.1: Save raw LLM response for debugging/optimization
     save_llm_response(state, "sequences_build", {"request": {"system": system[:500], "user": user[:500]}, "response": sb})
     
+    # v1.7.0: Save complete conversation to Director folder for fine-tuning
+    save_director_log(state, "sequences_build", system, user, sb)
+    
     sequences = sb.get("sequences")
     if not isinstance(sequences, list) or not sequences:
         raise HTTPException(502, f"LLM returned invalid sequences: {sb}")
@@ -1654,8 +1703,8 @@ def api_expand_all(project_id: str):
 
     all_shots: List[Dict[str,Any]] = []
     for seq in seqs:
-        # v1.6.5: Updated schema to include per-shot wardrobe
-        schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"specific wardrobe for this shot"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
+        # v1.7.1: Updated schema - shots inherit scene wardrobe unless overridden
+        schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"optional override, leave empty to use scene wardrobe"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
         system = (
             "Return ONLY valid JSON. No prose. No markdown.\n"
             "Expand ONE sequence into 5 to 8 shots.\n"
@@ -1667,11 +1716,12 @@ def api_expand_all(project_id: str):
             "- EXTRA cast members MUST appear in at least 1-2 shots across the video\n"
             "- EVERY cast member must appear somewhere in the video!\n"
             "- Use the cast[] array to specify which cast_ids appear in each shot\n"
-            "WARDROBE PER SHOT (v1.6.5):\n"
-            "- Use the wardrobe object to specify costume/clothing for EACH cast member in EACH shot\n"
-            "- Key is cast_id, value is the wardrobe description for that character in this specific shot\n"
-            "- Wardrobe can change between shots (e.g., 'disheveled' in verse, 'formal suit' in chorus)\n"
-            "- DO NOT put wardrobe in prompt_base, use the wardrobe field instead\n\n"
+            "WARDROBE INHERITANCE (v1.7.1):\n"
+            "- The parent SCENE may have a wardrobe field (e.g., 'firefighter uniforms') that applies to ALL shots in that scene\n"
+            "- ONLY use the per-shot wardrobe object to OVERRIDE scene wardrobe for specific cast members\n"
+            "- Key is cast_id, value is ONLY the override (leave empty {} if scene wardrobe is sufficient)\n"
+            "- Example: Scene has 'formal gala attire', one shot needs 'lead_1 in torn/disheveled gala outfit' after fight\n"
+            "- DO NOT repeat scene wardrobe in every shot - it's inherited automatically\n\n"
             f"Schema hint:\n{schema_hint}\n"
         )
         user = json.dumps({
@@ -1687,6 +1737,9 @@ def api_expand_all(project_id: str):
         
         # v1.5.9.1: Save raw LLM response
         save_llm_response(state, f"shots_expand_{seq['sequence_id']}", {"request": {"user": user[:500]}, "response": sb})
+        
+        # v1.7.1: Save complete conversation for fine-tuning
+        save_director_log(state, f"shots_expand_all_{seq['sequence_id']}", system, user, sb)
         
         shots = sb.get("shots")
         if not isinstance(shots, list) or not shots:
@@ -1782,18 +1835,19 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
             "impact": f"{int(impact*100)}%",
         })
 
-    # v1.6.5: Updated schema to include per-shot wardrobe
-    schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"specific wardrobe for this shot"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
+    # v1.7.1: Shots inherit scene wardrobe unless overridden
+    schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"optional override, leave empty to inherit scene wardrobe"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
     system = (
         "Return ONLY valid JSON. No prose. No markdown.\n"
         "Expand ONE sequence into 5 to 8 shots.\n"
         "Shots must fit within the sequence start/end. No gaps, no overlaps.\n"
         "SHOT DURATION: Each shot should be 2-5 seconds. NEVER exceed 5 seconds per shot.\n"
-        "WARDROBE PER SHOT (v1.6.5):\n"
-        "- Use the wardrobe object to specify costume/clothing for EACH cast member in EACH shot\n"
-        "- Key is cast_id, value is the wardrobe description for that character in this specific shot\n"
-        "- Wardrobe can change between shots (e.g., 'disheveled' in verse, 'formal suit' in chorus)\n"
-        "- DO NOT put wardrobe in prompt_base, use the wardrobe field instead\n\n"
+        "WARDROBE INHERITANCE (v1.7.1):\n"
+        "- The parent SCENE may have a wardrobe field (e.g., 'firefighter uniforms') that applies to ALL shots in that scene\n"
+        "- ONLY use the per-shot wardrobe object to OVERRIDE scene wardrobe for specific cast members\n"
+        "- Key is cast_id, value is ONLY the override (leave empty {} if scene wardrobe is sufficient)\n"
+        "- Example: Scene has 'formal gala attire', one shot needs 'lead_1 in torn/disheveled gala outfit' after fight\n"
+        "- DO NOT repeat scene wardrobe in every shot - it's inherited automatically\n\n"
         f"Schema hint:\n{schema_hint}\n"
     )
 
@@ -1807,6 +1861,10 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
     llm = (state.get("project") or {}).get("llm","claude")
     # v1.6.1: Use fallback-enabled LLM call with automatic cost tracking
     sb = call_llm_json(system, user, preferred=llm, state=state)
+    
+    # v1.7.1: Save complete conversation for fine-tuning
+    save_director_log(state, f"shots_expand_sequence_{seq_id}", system, user, sb)
+    
     shots = sb.get("shots")
     if not isinstance(shots, list) or not shots:
         raise HTTPException(502, "LLM returned invalid shots")
@@ -1915,26 +1973,40 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         prompt = f"{prompt}, {negative_prompt_override}"
         print(f"[INFO] Using negative prompt override: {negative_prompt_override[:50]}...")
     
-    # v1.6.5: Wardrobe per-shot and per-character (NOT scene-wide)
-    # Priority: shot.wardrobe[cast_id] > cast.prompt_extra
+    # v1.7.1: Wardrobe cascade: shot.wardrobe[cast_id] > scene.wardrobe > cast.prompt_extra
     cast_ids = shot.get("cast") or []
     cast_list = state.get("cast", [])
 
-    # v1.6.5: Shot-level wardrobe per character (keyed by cast_id)
+    # Get scene wardrobe (applies to all cast in scene unless overridden)
+    scene_wardrobe = None
+    seq_id = shot.get("sequence_id")
+    if seq_id:
+        sequences = state.get("storyboard", {}).get("sequences", [])
+        seq_idx = next((i for i, s in enumerate(sequences) if s.get("sequence_id") == seq_id), None)
+        if seq_idx is not None:
+            scenes = state.get("cast_matrix", {}).get("scenes", [])
+            if seq_idx < len(scenes):
+                scene_wardrobe = scenes[seq_idx].get("wardrobe", "").strip()
+
+    # v1.7.1: Shot-level wardrobe per character (overrides scene wardrobe)
     shot_wardrobes = shot.get("wardrobe") or {}  # Dict of {cast_id: "wardrobe description"}
 
-    # Apply wardrobe per cast member
+    # Apply wardrobe per cast member with cascade
     for cast_id in cast_ids[:2]:
         cast_member = next((c for c in cast_list if c.get("cast_id") == cast_id), None)
         if not cast_member:
             continue
 
-        # v1.6.5: Check shot-level wardrobe for this specific cast member first
+        # Priority 1: Shot-level wardrobe override for this specific cast member
         if shot_wardrobes.get(cast_id):
             wardrobe_text = shot_wardrobes[cast_id].strip()
             prompt = f"{prompt}, {cast_member.get('name', cast_id)}: {wardrobe_text}"
-            print(f"[INFO] Using shot wardrobe for {cast_id}: {wardrobe_text[:40]}...")
-        # Fallback to cast prompt_extra if no shot-level wardrobe
+            print(f"[INFO] Using shot wardrobe override for {cast_id}: {wardrobe_text[:40]}...")
+        # Priority 2: Scene-wide wardrobe (applies to all cast in scene)
+        elif scene_wardrobe:
+            prompt = f"{prompt}, {cast_member.get('name', cast_id)}: {scene_wardrobe}"
+            print(f"[INFO] Using scene wardrobe for {cast_id}: {scene_wardrobe[:40]}...")
+        # Priority 3: Fallback to cast default prompt_extra
         elif cast_member.get("prompt_extra"):
             prompt = f"{prompt}, {cast_member['prompt_extra']}"
             print(f"[INFO] Using cast prompt_extra for {cast_id}")
@@ -2039,6 +2111,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
     
     img_url = None
     model_name = "unknown"
+    render_cost = 0
     
     # If we have reference images, use img2img; otherwise fallback to t2i
     if ref_images:
@@ -2046,7 +2119,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         try:
             img_url = call_img2img_editor(editor, prompt, ref_images, aspect, project_id)
             model_name = editor
-            track_cost(f"fal-ai/{editor}", 1, state=state, note="shot_render")
+            render_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
         except Exception as e:
             print(f"[WARN] img2img failed, falling back to t2i: {e}")
             ref_images = []  # Clear to trigger t2i fallback
@@ -2057,7 +2130,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         endpoint, payload, model_name = t2i_endpoint_and_payload(state, prompt, image_size)
         
         r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
-        track_cost(f"fal-ai/{model_name}", 1, state=state, note="shot_render_t2i")
+        render_cost = API_COSTS.get(f"fal-ai/{model_name}", 0.04)
         
         if r.status_code >= 300:
             shot["render"] = {"status":"error","image_url":None,"model":model_name,"error":r.text}
@@ -2086,14 +2159,23 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         "error": None if img_url else "No image url found"
     }
 
-    # v1.6.5: Thread-safe save - reload state, update shot, save atomically
+    # v1.7.1: Thread-safe save - reload state, update shot, persist costs, save atomically
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
         fresh_shots = fresh_state.get("storyboard", {}).get("shots", [])
         fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
         if fresh_shot:
             fresh_shot["render"] = render_result
-            save_project(fresh_state)
+        
+        # v1.7.1: Persist costs to fresh_state
+        if render_cost > 0:
+            if "costs" not in fresh_state:
+                fresh_state["costs"] = {"total": 0.0, "calls": []}
+            note = "shot_render" if ref_images else "shot_render_t2i"
+            fresh_state["costs"]["calls"].append({"model": f"fal-ai/{model_name}", "cost": round(render_cost, 4), "ts": time.time(), "note": note})
+            fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + render_cost, 4)
+        
+        save_project(fresh_state)
 
     return {"shot_id": shot_id, "prompt": prompt, "image_url": img_url, "ref_images_used": len(ref_images), "result": render_result}
 
@@ -2193,7 +2275,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     editor = locked_editor_key(state)
     try:
         img_url = call_img2img_editor(editor, full_prompt, ref_images, aspect, project_id)
-        track_cost(f"fal-ai/{editor}", 1, state=state, note="shot_edit")
+        editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     except Exception as e:
         raise HTTPException(502, f"Edit failed: {str(e)}")
     
@@ -2223,7 +2305,14 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
         fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
         if fresh_shot:
             fresh_shot["render"] = render_result
-            save_project(fresh_state)
+        
+        # v1.7.1: Persist costs to fresh_state
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time(), "note": "shot_edit"})
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
+        
+        save_project(fresh_state)
 
     return {
         "shot_id": shot_id,

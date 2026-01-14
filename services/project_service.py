@@ -89,6 +89,13 @@ def get_project_llm_dir(state: Dict[str, Any]) -> Path:
     return llm_dir
 
 
+def get_project_director_dir(state: Dict[str, Any]) -> Path:
+    """Get Director subdirectory for project - stores LLM prompts and responses for fine-tuning."""
+    director_dir = get_project_folder(state) / "director"
+    director_dir.mkdir(parents=True, exist_ok=True)
+    return director_dir
+
+
 def save_llm_response(state: Dict[str, Any], name: str, response: Any) -> Path:
     """Save LLM response to project's llm folder. Returns path."""
     llm_dir = get_project_llm_dir(state)
@@ -98,6 +105,38 @@ def save_llm_response(state: Dict[str, Any], name: str, response: Any) -> Path:
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(response, f, indent=2, ensure_ascii=False)
     print(f"[INFO] Saved LLM response: {filepath}")
+    return filepath
+
+
+def save_director_log(state: Dict[str, Any], operation: str, system_prompt: str, user_prompt: str, response: Any) -> Path:
+    """Save complete LLM conversation to Director folder for fine-tuning.
+    
+    Args:
+        state: Project state
+        operation: Name of operation (e.g., 'generate_storyboard', 'insert_scenes')
+        system_prompt: Full system prompt sent to LLM
+        user_prompt: Full user prompt/context sent to LLM
+        response: Complete LLM response
+    """
+    director_dir = get_project_director_dir(state)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"{operation}_{timestamp}.json"
+    filepath = director_dir / filename
+    
+    log_data = {
+        "operation": operation,
+        "timestamp": timestamp,
+        "project_id": state.get("project_id"),
+        "project_title": state.get("project", {}).get("title"),
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "response": response,
+    }
+    
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(log_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"[DIRECTOR] Saved conversation log: {filepath}")
     return filepath
 
 

@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.7.1 (2026-01-14) - UI POLISH & DIRECTOR LOGGING
+
+### Fixed
+- **Cost tracking persistence**: All render endpoints now persist costs to project JSON (Bug #1 - Critical Fix)
+  - Scene renders (decor, decor_alt, wardrobe preview)
+  - Shot renders (both t2i and i2i paths)
+  - Scene edit operations (decor_alt generation, img2img edits)
+  - Shot edit operations
+  - Previously costs were tracked to in-memory state but lost on fresh_state reload within locks
+- **Scene queue system**: buildTimelineAndScenes now uses unified queue system like shots (visual status in timeline)
+- **AudioDNA/CastMatrix sync**: Fixed flexbox height when cast > 3 (Bug #2)
+- **CastMatrix UX**: 6 fixes including input loss, ref clickability, style lock clarity (Bug #3)
+- **Scene decor people**: Strengthened no-people prompt with all-caps emphasis (even if style allows people)
+- **Wardrobe cascade**: Shots now inherit scene wardrobe with proper fallback chain (shot > scene > cast)
+- **Image popup z-index**: Now appears above scene popup (z-index 2100 vs 2000)
+
+### UI Improvements
+- **Timeline icons**: Wardrobe and decor-lock indicators moved to bottom-right with yellow accent
+- **Queue status**: Added `.timeline-seg-v2.in-queue` styling (dashed yellow border)
+- **Render states**: Added timeline support for rendering/done/error states with animations
+- **Queue badges**: Added yellow queue number styling in timeline thumbnails
+
+### Director Logging (Fine-tuning Data Collection)
+- **New module**: `get_project_director_dir()` and `save_director_log()` in project_service
+- **Complete conversations**: System prompt + user context + LLM response saved to director/{operation}_{timestamp}.json
+- **Coverage**: All 4 LLM endpoints now log to Director folder:
+  - `sequences/build` - Timeline generation with beat grid
+  - `scenes/autogen` - Scene generation from sequences
+  - `shots/expand_all` - Expand all sequences to shots
+  - `shots/expand_sequence` - Expand single sequence to shots
+- **Purpose**: Training data for fine-tuning storyboard generation models
+
+### LLM Prompt Improvements
+- **Scene generation**: Strengthened guidance to use B-scenes and wardrobe SPARINGLY (95% and 80-90% empty respectively)
+- **B-scene criteria**: Only for narratively essential dual locations (flashbacks, dream vs reality, parallel timelines)
+- **Wardrobe criteria**: Only for story-critical costumes (uniforms, formal events, period clothing, transformations)
+- **No repetition**: Explicitly forbid repeating same wardrobe across multiple scenes
+- **Shot inheritance**: Shots now inherit scene wardrobe unless specifically overridden
+- **Empty decors**: CRITICAL emphasis that scene renders must be UNINHABITED (even if style allows people)
+
+### Technical
+- Enhanced icon positioning with proper z-index stacking when both wardrobe + lock present
+- Uniformized timeline scene cards with shot card design patterns
+- Added pulse-border animation for rendering state
+
+---
+
 ## v1.7.0 (2026-01-14) - SERVICES ARCHITECTURE
 
 ### Major Refactor

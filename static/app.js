@@ -1457,28 +1457,30 @@ async function createTimeline() {
       
       const scenes = result.scenes || [];
       
-      // Render each scene with UI refresh
-      for (let i = 0; i < scenes.length; i++) {
-        const sc = scenes[i];
-        const pct = 40 + Math.round((i / scenes.length) * 50);
-        setStatus(`Rendering scene ${i + 1}/${scenes.length}…`, pct, "storyboardStatus");
-        
-        try {
-          await apiCall(`/api/project/${pid()}/castmatrix/scene/${sc.scene_id}/render`, {
-            method: "POST"
-          });
-          // v1.5.4: Refresh UI after each scene to show progress
-          const state = await apiCall(`/api/project/${pid()}`);
-          PROJECT_STATE = state;
-          renderTimeline(state);
-        } catch (e) {
-          console.warn(`Scene ${sc.scene_id} render failed:`, e);
+      // v1.7.1: Use unified queue system for scenes
+      TOTAL_QUEUED = scenes.length;
+      COMPLETED_COUNT = 0;
+      RENDER_STOPPED = false;
+      
+      scenes.forEach(sc => {
+        const item = {type: "scene", id: sc.scene_id};
+        if (!RENDER_QUEUE.some(q => q.type === "scene" && q.id === sc.scene_id)) {
+          RENDER_QUEUE.push(item);
         }
-      }
+      });
+      
+      setStatus(`Queued ${scenes.length} scenes for rendering…`, null, "storyboardStatus");
+      showStopButton();
+      
+      await refreshFromServer();  // Update UI with new scenes
+      renderTimeline(PROJECT_STATE);  // Show queue status
+      
+      // Start processing
+      processRenderQueue();
+    } else {
+      setStatus(`Timeline created`, 100, "storyboardStatus");
+      await refreshFromServer();
     }
-    
-    setStatus(`${seqs.length} scenes created`, 100, "storyboardStatus");
-    await refreshFromServer();
   } catch (e) {
     showError(e.message);
   }

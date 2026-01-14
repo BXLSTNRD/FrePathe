@@ -561,7 +561,7 @@ button.tiny {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  flex: 1;  /* v1.7.0: Use flex: 1 instead of flex-grow: 1 to fill available space */
+  flex-grow: 1;  /* v1.7.0: Use flex: 1 instead of flex-grow: 1 to fill available space */
   min-height: 0;  /* v1.7.0: Allow flexbox shrinking */
 }
 
@@ -628,24 +628,25 @@ button.tiny {
   white-space: nowrap;
 }
 
-/* v1.7.0: Lyrics - fixed height when cast <= 3, grows when cast > 3 */
+/* v1.7.1: Lyrics - fixed height when cast <= 3, grows when cast > 3 */
 .lyrics-pill {
   flex: 0 0 auto;  /* Don't grow by default */
   min-height: 0;
+  max-height: none !important;
   display: flex;
   flex-direction: column;
 }
 
-/* v1.7.0: When cast-expanded class is added (4+ cast), lyrics grows to fill space */
+/* v1.7.1: When cast-expanded class is added (4+ cast), lyrics grows to fill space */
 .cast-expanded .lyrics-pill {
   flex: 1;
-  min-height: 200px;  /* Maintain minimum size */
+  
 }
 
 .lyrics-content {
   font-size: 12px;
   color: var(--text);
-  height: 200px;  /* Fixed height by default */
+  height: 200px;  /* v1.5.9: Fixed height by default */
   max-height: 200px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -654,9 +655,9 @@ button.tiny {
   word-wrap: break-word;
 }
 
-/* v1.7.0: When expanded, lyrics fills all available space */
+/* v1.7.1: When expanded, lyrics can grow to fill available space */
 .cast-expanded .lyrics-content {
-  height: 100%;  /* Fill parent container */
+  height: auto;
   max-height: none;
   flex: 1;
   min-height: 200px;
@@ -1144,6 +1145,26 @@ button.tiny {
   background: rgba(107, 138, 253, 0.1);
 }
 
+/* v1.7.1: Uniformize timeline queue/render states with shot cards */
+.timeline-seg-v2.in-queue {
+  border-style: dashed;
+  border-color: var(--accent);
+  opacity: 0.8;
+}
+
+.timeline-seg-v2.rendering {
+  border-color: #f59e0b;
+  animation: pulse-border 1.5s ease-in-out infinite;
+}
+
+.timeline-seg-v2.render-done {
+  border-color: #22c55e;
+}
+
+.timeline-seg-v2.render-error {
+  border-color: #ef4444;
+}
+
 .timeline-seg-thumb {
   position: relative;
   width: 60px;
@@ -1167,6 +1188,13 @@ button.tiny {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-dim);
+}
+
+/* v1.7.1: Queue number badge in timeline thumbnails */
+.timeline-seg-thumb .queue-num {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
 }
 
 .timeline-seg-info {
@@ -1495,6 +1523,11 @@ button.tiny {
   z-index: 2000;
 }
 
+/* v1.7.1: Image popup should appear above scene popup */
+#imagePopup {
+  z-index: 2100;
+}
+
 .popup-content {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -1702,11 +1735,12 @@ button.tiny {
 }
 
 /* v1.6.2: Decor lock indicator on timeline */
+/* v1.7.1: Decor lock indicator - bottom-right with yellow accent */
 .decor-lock-indicator {
   position: absolute;
-  top: 4px;
+  bottom: 4px;
   right: 4px;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0,0,0,0.7);
   padding: 3px 5px;
   border-radius: 3px;
   display: flex;
@@ -1715,12 +1749,12 @@ button.tiny {
   color: var(--accent);
 }
 
-/* v1.6.2: Wardrobe indicator on timeline */
+/* v1.7.1: Wardrobe indicator - bottom-left when alone, shifts left of lock when both present */
 .wardrobe-indicator {
   position: absolute;
   bottom: 4px;
-  right: 4px;
-  background: rgba(0,0,0,0.6);
+  right: 26px;
+  background: rgba(0,0,0,0.7);
   padding: 3px 5px;
   border-radius: 3px;
   cursor: help;
@@ -1728,6 +1762,11 @@ button.tiny {
   align-items: center;
   justify-content: center;
   color: var(--accent);
+}
+
+/* v1.7.1: When wardrobe alone (no lock sibling), align to right edge */
+.wardrobe-indicator:last-child {
+  right: 4px;
 }
 
 /* v1.6.5: Scene popup - 3 preview boxes layout */

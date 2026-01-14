@@ -779,8 +779,8 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
             ref_images.append(style_lock_url)
             print(f"[INFO] Using style lock image for consistency: {style_lock_url}")
 
-    # v1.7.0: Style consistency instruction - tell AI to match style, not add the person
-    style_instruction = "match the artistic style and color palette of the second reference image, do not include or blend the person from that reference, " if style_lock_url else ""
+    # v1.7.0: Style consistency instruction - EXPLICIT: use style only, not the person
+    style_instruction = "USE THE SECOND REFERENCE IMAGE ONLY AS A STYLE GUIDE - match its artistic style, lighting, color palette, and atmosphere, but DO NOT include or blend any person or character from that second reference, " if style_lock_url else ""
     
     prompt_a = f"{base_style}, {extra_prefix}{style_instruction}full body, standing, three-quarter view, slight angle, neutral pose, clean background, consistent identity, {negatives}"
     prompt_b = f"{base_style}, {extra_prefix}{style_instruction}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"

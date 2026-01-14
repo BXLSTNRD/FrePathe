@@ -1030,7 +1030,7 @@ function renderCastList(state) {
             ${!isLocked && hasRefs ? `<button class="cast-prompt-rerender" onclick="rerenderCastWithPrompt('${c.cast_id}')" title="Rerender with prompt">↻</button>` : ''}
           </div>
           
-          <div class="cast-ref-a" onclick="${isLocked ? (refs.ref_a ? `showImagePopup('${refs.ref_a}')` : '') : `this.parentElement.querySelector('input[data-type=ref_a]').click()`}" style="cursor: pointer;">
+          <div class="cast-ref-a" onclick="${refs.ref_a ? `showImagePopup('${refs.ref_a}')` : (!isLocked ? `this.parentElement.querySelector('input[data-type=ref_a]').click()` : '')}" style="cursor: ${refs.ref_a ? 'pointer' : 'default'};">
             ${refs.ref_a
               ? `<img src="${cacheBust(refs.ref_a)}"/>`
               : `<span>A</span>`
@@ -1038,7 +1038,7 @@ function renderCastList(state) {
             ${!isLocked && refs.ref_a ? `<button class="cast-rerender" onclick="event.stopPropagation(); rerenderSingleRef('${c.cast_id}', 'a')" title="Rerender A">↻</button>` : ''}
           </div>
 
-          <div class="cast-ref-b" onclick="${isLocked ? (refs.ref_b ? `showImagePopup('${refs.ref_b}')` : '') : `this.parentElement.querySelector('input[data-type=ref_b]').click()`}" style="cursor: pointer;">
+          <div class="cast-ref-b" onclick="${refs.ref_b ? `showImagePopup('${refs.ref_b}')` : (!isLocked ? `this.parentElement.querySelector('input[data-type=ref_b]').click()` : '')}" style="cursor: ${refs.ref_b ? 'pointer' : 'default'};">
             ${refs.ref_b
               ? `<img src="${cacheBust(refs.ref_b)}"/>`
               : `<span>B</span>`
@@ -1172,7 +1172,11 @@ async function createCastRefs(castId) {
     setStatus("Generating refs…", null, "castStatus");
     await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
     setStatus("Refs created", 100, "castStatus");
-    await refreshFromServer();
+    
+    // v1.7.0: Update only this cast card, not entire list (prevents input loss)
+    const freshState = await apiCall(`/api/project/${pid()}`);
+    PROJECT_STATE = freshState;
+    updateCastCardRefs(castId, freshState);
   } catch (e) {
     showError(e.message);
   } finally {
@@ -1258,7 +1262,11 @@ async function rerenderSingleRef(castId, refType) {
     setStatus(`Regenerating ref ${refType.toUpperCase()}…`, null, "castStatus");
     await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/${refType}`, { method: "POST" });
     setStatus(`Ref ${refType.toUpperCase()} regenerated`, 100, "castStatus");
-    await refreshFromServer();
+    
+    // v1.7.0: Update only this cast card, not entire list
+    const freshState = await apiCall(`/api/project/${pid()}`);
+    PROJECT_STATE = freshState;
+    updateCastCardRefs(castId, freshState);
   } catch (e) {
     showError(e.message);
   }
@@ -1276,7 +1284,11 @@ async function rerenderCastWithPrompt(castId) {
     setStatus("Regenerating with extra prompt…", null, "castStatus");
     await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
     setStatus("References regenerated", 100, "castStatus");
-    await refreshFromServer();
+    
+    // v1.7.0: Update only this cast card, not entire list
+    const freshState = await apiCall(`/api/project/${pid()}`);
+    PROJECT_STATE = freshState;
+    updateCastCardRefs(castId, freshState);
   } catch (e) {
     showError(e.message);
   } finally {
@@ -2603,29 +2615,42 @@ async function renderItemAsync(item) {
 // v1.7.0: Update cast card with new refs without re-rendering entire list
 function updateCastCardRefs(castId, state) {
   const card = document.querySelector(`.cast-card[data-cast-id="${castId}"]`);
-  if (!card) return;
+  if (!card) {
+    console.warn(`[updateCastCardRefs] Card not found for ${castId}`);
+    return;
+  }
   
   const charRefs = state?.cast_matrix?.character_refs || {};
   const refs = charRefs[castId] || {};
+  const isLocked = state?.project?.cast_locked || false;
   
-  // Update ref_a thumbnail
+  // Update ref_a thumbnail with click handler
   const refAContainer = card.querySelector('.cast-ref-a');
   if (refAContainer && refs.ref_a) {
+    refAContainer.onclick = () => showImagePopup(refs.ref_a);
+    refAContainer.style.cursor = 'pointer';
     refAContainer.innerHTML = `<img src="${cacheBust(refs.ref_a)}"/>`;
+    if (!isLocked) {
+      refAContainer.innerHTML += `<button class="cast-rerender" onclick="event.stopPropagation(); rerenderSingleRef('${castId}', 'a')" title="Rerender A">↻</button>`;
+    }
   }
   
-  // Update ref_b thumbnail
+  // Update ref_b thumbnail with click handler
   const refBContainer = card.querySelector('.cast-ref-b');
   if (refBContainer && refs.ref_b) {
+    refBContainer.onclick = () => showImagePopup(refs.ref_b);
+    refBContainer.style.cursor = 'pointer';
     refBContainer.innerHTML = `<img src="${cacheBust(refs.ref_b)}"/>`;
+    if (!isLocked) {
+      refBContainer.innerHTML += `<button class="cast-rerender" onclick="event.stopPropagation(); rerenderSingleRef('${castId}', 'b')" title="Rerender B">↻</button>`;
+    }
   }
   
-  // Hide create button, show ref containers
+  // Replace CREATE button with READY badge
   const createBtn = card.querySelector('.cast-create-btn');
-  if (createBtn) createBtn.classList.add('hidden');
-  
-  const refsRow = card.querySelector('.cast-refs-row');
-  if (refsRow) refsRow.classList.remove('hidden');
+  if (createBtn && refs.ref_a && refs.ref_b) {
+    createBtn.outerHTML = '<span class="cast-ready">READY</span>';
+  }
   
   console.log(`[updateCastCardRefs] Updated refs for ${castId}: ref_a=${!!refs.ref_a}, ref_b=${!!refs.ref_b}`);
 }

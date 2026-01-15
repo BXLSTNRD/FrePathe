@@ -795,6 +795,50 @@ def api_cast_update(project_id: str, cast_id: str, payload: Dict[str,Any]):
     save_project(state)
     return {"cast_updated": cast}
 
+@app.post("/api/project/{project_id}/cast/{cast_id}/image")
+async def api_cast_update_image(project_id: str, cast_id: str, file: UploadFile = File(...)):
+    """Update the main cast image for an existing cast member."""
+    state = load_project(project_id)
+    require_key("FAL_KEY", FAL_KEY)
+    
+    cast = find_cast(state, cast_id)
+    if not cast:
+        raise HTTPException(404, "Cast not found")
+    
+    ext = Path(file.filename).suffix.lower() if file.filename else ".png"
+    if ext not in [".png", ".jpg", ".jpeg", ".webp"]:
+        ext = ".png"
+    
+    # Save cast image to project folder
+    renders_dir = PATH_MANAGER.get_project_renders_dir(state)
+    safe_name = sanitize_filename(cast.get("name", cast_id), 20)
+    local_filename = f"Cast_{safe_name}_Source{ext}"
+    local_path = renders_dir / local_filename
+    file_bytes = await file.read()
+    local_path.write_bytes(file_bytes)
+    local_url = PATH_MANAGER.to_url(local_path)
+    
+    # Upload to FAL for img2img processing
+    tmp_path = PATH_MANAGER.create_temp_file(f"cast_{project_id}_{cast_id}", ext)
+    tmp_path.write_bytes(file_bytes)
+
+    try:
+        fal_url = fal_client.upload_file(str(tmp_path))
+        tmp_path.unlink(missing_ok=True)
+    except Exception as e:
+        return JSONResponse({"error": "fal upload_file failed", "detail": str(e)}, status_code=502)
+
+    # Update the primary reference image
+    refs = cast.get("reference_images", [])
+    if refs:
+        refs[0] = {"url": local_url, "fal_url": fal_url, "role": "primary_face", "notes": ""}
+    else:
+        refs.append({"url": local_url, "fal_url": fal_url, "role": "primary_face", "notes": ""})
+    cast["reference_images"] = refs
+    
+    save_project(state)
+    return {"cast_id": cast_id, "image_updated": local_url}
+
 # v1.5.4: Delete cast member
 @app.delete("/api/project/{project_id}/cast/{cast_id}")
 def api_cast_delete(project_id: str, cast_id: str):

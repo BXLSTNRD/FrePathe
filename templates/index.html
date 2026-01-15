@@ -46,7 +46,6 @@
   <!-- v1.5.9: Load/Save first, then settings -->
   <div class="project-grid">
     <div class="field-group">
-      <label class="field-label">Load</label>
       <button class="icon-btn-large" onclick="loadProjectFromFile()" title="Load Project">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
@@ -56,7 +55,6 @@
       </button>
     </div>
     <div class="field-group">
-      <label class="field-label">Save</label>
       <button class="icon-btn-large" onclick="saveProjectToFile()" title="Save Project">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
@@ -66,49 +64,49 @@
       </button>
     </div>
     <div class="field-group">
-      <label class="field-label">Title</label>
-      <input id="title" type="text" placeholder="Project title" value="New Production"/>
+      <input id="title" type="text" placeholder="Title" value="New Production"/>
     </div>
     <div class="field-group">
-      <label class="field-label">Style</label>
-      <select id="style" onchange="updateProjectStyle(this.value)">__STYLE_OPTIONS__</select>
+      <select id="style" onchange="updateProjectStyle(this.value)">
+        <option value="" disabled selected hidden>Style</option>
+        __STYLE_OPTIONS__
+      </select>
     </div>
     <div class="field-group">
-      <label class="field-label">Aspect</label>
       <select id="aspect">
+        <option value="" disabled selected hidden>Aspect</option>
         <option value="horizontal">Horizontal (16:9)</option>
         <option value="vertical">Vertical (9:16)</option>
         <option value="square">Square (1:1)</option>
       </select>
     </div>
     <div class="field-group">
-      <label class="field-label">LLM</label>
       <select id="llm">
+        <option value="" disabled selected hidden>LLM</option>
         <option value="claude">Claude</option>
         <option value="openai">OpenAI</option>
       </select>
     </div>
     <div class="field-group">
-      <label class="field-label">Image Model</label>
       <select id="imageModel" onchange="updateImageModel(this.value)">
-        <option value="nanobanana" selected>Nano Banana Pro</option>
+        <option value="" disabled selected hidden>Image Model</option>
+        <option value="nanobanana">Nano Banana Pro</option>
         <option value="seedream45">Seedream 4.5</option>
         <option value="flux2">Flux 2</option>
       </select>
     </div>
     <div class="field-group">
-      <label class="field-label">Video Model</label>
       <select id="videoModel">
-        <option value="none" selected>None (Stills only)</option>
+        <option value="" disabled selected hidden>Video Model</option>
         <option value="kling">Kling 1.6</option>
         <option value="runway">Runway Gen-3</option>
         <option value="minimax">MiniMax</option>
       </select>
     </div>
     <div class="field-group">
-      <label class="field-label">Audio Expert</label>
       <select id="useWhisper" onchange="updateWhisperSetting(this.value === 'on')">
-        <option value="off" selected>Off</option>
+        <option value="" disabled selected hidden>Audio Expert</option>
+        <option value="off">Off</option>
         <option value="on">On</option>
       </select>
     </div>

@@ -1171,6 +1171,25 @@ async function uploadNewCast(idx, role, input) {
   }
 }
 
+// Update main cast image
+async function updateCastImage(castId, input) {
+  const f = input.files[0];
+  if (!f) return;
+  try {
+    setStatus("Uploading cast image…", null, "castStatus");
+    
+    const fd = new FormData();
+    fd.append("file", f);
+    
+    await apiCall(`/api/project/${pid()}/cast/${castId}/image`, { method: "POST", body: fd });
+    
+    setStatus("Cast image updated", 100, "castStatus");
+    await refreshFromServer();
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
 // v1.5.3: Update cast ref image (a or b) from file
 async function updateCastRefImage(castId, refType, input) {
   const f = input.files[0];

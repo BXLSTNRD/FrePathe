@@ -418,7 +418,7 @@ function loadProjectFromFile() {
       const videoModelEl = document.getElementById("videoModel");
       if (videoModelEl) videoModelEl.value = state.project.video_model || "none";
       const useWhisperEl = document.getElementById("useWhisper");
-      if (useWhisperEl) useWhisperEl.checked = state.project.use_whisper || false;
+      if (useWhisperEl) useWhisperEl.value = (state.project.use_whisper || false) ? "on" : "off";
       
       // Load image model
       const imageModelEl = document.getElementById("imageModel");

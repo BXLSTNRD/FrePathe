@@ -2,7 +2,7 @@
 <html><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Fré Pathé VIDEO TOOLS 1.7.1</title>
+<title>Fré Pathé VIDEO TOOLS 1.7.3</title>
 <link rel="stylesheet" href="/static/style.css"></head>
 <body>
 
@@ -13,7 +13,7 @@
 <header class="header">
   <div class="logo-wrap">
     <img src="/static/logo.png" alt="Fré Pathé" class="logo-img"/>
-    <span class="version">v1.7.2</span>
+    <span class="version">v1.7.3</span>
   </div>
 </header>
 
@@ -29,8 +29,8 @@
     <div class="pipeline-step" data-step="4">STORYBOARD</div>
     <div class="pipeline-arrow">→</div>
     <div class="pipeline-step" data-step="5">PREVIEW</div>
-    <div class="pipeline-arrow dim">→</div>
-    <div class="pipeline-step dim" data-step="6">ANIMATE</div>
+    <div class="pipeline-arrow">→</div>
+    <div class="pipeline-step" data-step="6">ANIMATE</div>
     <div class="pipeline-arrow dim">→</div>
     <div class="pipeline-step dim" data-step="7">MONTAGE</div>
     <div class="pipeline-arrow dim">→</div>
@@ -101,11 +101,11 @@
     </div>
     <div class="field-group">
       <label class="field-label">Video Model</label>
-      <select id="videoModel" disabled title="Coming soon">
+      <select id="videoModel">
         <option value="none" selected>None (Stills only)</option>
-        <option value="kling" disabled>Kling 1.6 (Coming soon)</option>
-        <option value="runway" disabled>Runway Gen-3 (Coming soon)</option>
-        <option value="minimax" disabled>MiniMax (Coming soon)</option>
+        <option value="kling">Kling 1.6</option>
+        <option value="runway">Runway Gen-3</option>
+        <option value="minimax">MiniMax</option>
       </select>
     </div>
     <div class="field-group">
@@ -116,6 +116,7 @@
     </div>
   </div>
   <input id="projectId" type="hidden" value=""/>
+  <input id="projectLocation" type="hidden" value=""/>
 </div>
 </div>
 
@@ -225,7 +226,7 @@
   <div class="subsection">
     <div class="section-header">
       <h3>Shots <span id="shotsCount" class="count-badge">0</span></h3>
-      <div style="display:flex;gap:8px;align-items:center;">
+      <div style="display:flex;gap:8px;align-items:center;margin-left:auto;">
         <button class="small" onclick="refreshFromServer()" title="Refresh from server">⟳</button>
         <button class="accent-btn" onclick="renderAllShots()" id="renderAllShotsBtn">RENDER ALL</button>
         <button class="stop-btn hidden" onclick="stopRenderQueue()" id="stopRenderBtn" title="Stop rendering">STOP</button>
@@ -254,6 +255,37 @@
   </div>
   <div id="videoResult" class="muted" style="margin-top: 16px;">
     Render all shots first, then export preview with audio.
+  </div>
+</div>
+</div>
+
+<!-- ANIMATE -->
+<div class="card" id="section-animate">
+<h2>ANIMATE <span id="animateStatus" class="module-status"></span></h2>
+<div class="module-content">
+  <!-- Action Buttons -->
+  <div class="row" style="gap: 8px;">
+    <button class="accent-btn" onclick="animateAllShots()" id="animateAllBtn">
+      ANIMATE ALL SHOTS
+    </button>
+    <button class="accent-btn" onclick="animateSelectedSequence()" id="animateSequenceBtn">
+      ANIMATE SEQUENCE
+    </button>
+    <button class="stop-btn hidden" onclick="stopAnimationQueue()" id="stopAnimateBtn" title="Stop animation">
+      STOP
+    </button>
+  </div>
+
+  <!-- Progress & Stats -->
+  <div id="animateStats" class="stats-row" style="margin-top: 16px; display: flex; gap: 24px; font-size: 14px;">
+    <span>Animated: <strong id="animatedCount">0</strong> / <strong id="totalShotsCount">0</strong></span>
+    <span>Queue: <strong id="animationQueueCount">0</strong></span>
+    <span>Est. Time: <strong id="animationETA">--</strong></span>
+  </div>
+
+  <!-- Shot Video Grid -->
+  <div id="shotVideosGrid" class="shots-grid" style="margin-top: 16px;">
+    <!-- Dynamically populated with video thumbnails -->
   </div>
 </div>
 </div>

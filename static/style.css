@@ -395,9 +395,10 @@ body {
 /* Section headers with spacing */
 .section-header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   margin-bottom: 12px;
+  gap: 12px;
 }
 
 .section-info {
@@ -2352,4 +2353,90 @@ button.tiny {
   .shot-editor-layout {
     grid-template-columns: 1fr;
   }
+}
+
+/* ========= Animate Module ========= */
+
+#section-animate .stats-row {
+  padding: 12px;
+  background: var(--bg-hover);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+#section-animate .stats-row strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.shot-animate-btn {
+  transition: all 0.2s ease;
+}
+
+.shot-animate-btn:hover {
+  background: rgba(16, 185, 129, 1) !important;
+  transform: translate(-50%, -50%) scale(1.05);
+}
+
+#shotVideosGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+#shotVideosGrid .shot-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: all 0.2s;
+}
+
+#shotVideosGrid .shot-card:hover {
+  border-color: var(--border-light);
+  transform: translateY(-2px);
+}
+
+#shotVideosGrid .shot-card video,
+#shotVideosGrid .shot-card img {
+  display: block;
+  cursor: pointer;
+}
+
+#shotVideosGrid .shot-card video:hover {
+  opacity: 0.95;
+}
+
+.shot-badge.video-badge {
+  background: #10b981;
+  color: white;
+}
+
+#shotVideosGrid .shot-info {
+  color: var(--text-muted);
+}
+
+#shotVideosGrid .shot-info strong {
+  color: var(--text);
+}
+
+/* Stop button for animation */
+.stop-btn {
+  background: #ef4444;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+.stop-btn:hover {
+  background: #dc2626;
+}
+
+.stop-btn.hidden {
+  display: none;
 }

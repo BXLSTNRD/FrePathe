@@ -15,9 +15,7 @@ from jsonschema import validate, ValidationError
 
 from .config import (
     VERSION,
-    DATA,
-    PROJECTS_DIR,
-    RENDERS_DIR,
+    PATH_MANAGER,
     BASE,
     now_iso,
     locked_render_models
@@ -47,53 +45,36 @@ def sanitize_filename(name: str, max_length: int = 50) -> str:
 # ========= Project Folder System =========
 
 def get_project_folder(state: Dict[str, Any]) -> Path:
-    """Get project folder path, create if needed. Format: ProjectTitle_vX.X.X"""
-    project = state.get("project", {})
-    title = project.get("title", "Untitled")
-    # Use version that created the project, or current version
-    created_version = project.get("created_version", VERSION)
-    
-    safe_title = sanitize_filename(title, 30)
-    folder_name = f"{safe_title}_v{created_version}"
-    
-    folder_path = PROJECTS_DIR / folder_name
-    folder_path.mkdir(parents=True, exist_ok=True)
-    return folder_path
+    """
+    v1.8.0: Wrapper around PATH_MANAGER.get_project_folder()
+    Kept for backwards compatibility.
+    """
+    return PATH_MANAGER.get_project_folder(state)
 
 
 def get_project_renders_dir(state: Dict[str, Any]) -> Path:
-    """Get renders subdirectory for project."""
-    renders_dir = get_project_folder(state) / "renders"
-    renders_dir.mkdir(parents=True, exist_ok=True)
-    return renders_dir
+    """v1.8.0: Wrapper around PATH_MANAGER.get_project_renders_dir()"""
+    return PATH_MANAGER.get_project_renders_dir(state)
 
 
 def get_project_audio_dir(state: Dict[str, Any]) -> Path:
-    """Get audio subdirectory for project."""
-    audio_dir = get_project_folder(state) / "audio"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    return audio_dir
+    """v1.8.0: Wrapper around PATH_MANAGER.get_project_audio_dir()"""
+    return PATH_MANAGER.get_project_audio_dir(state)
 
 
 def get_project_video_dir(state: Dict[str, Any]) -> Path:
-    """Get video subdirectory for project."""
-    video_dir = get_project_folder(state) / "video"
-    video_dir.mkdir(parents=True, exist_ok=True)
-    return video_dir
+    """v1.8.0: Wrapper around PATH_MANAGER.get_project_video_dir()"""
+    return PATH_MANAGER.get_project_video_dir(state)
 
 
 def get_project_llm_dir(state: Dict[str, Any]) -> Path:
-    """Get LLM responses subdirectory for project."""
-    llm_dir = get_project_folder(state) / "llm"
-    llm_dir.mkdir(parents=True, exist_ok=True)
-    return llm_dir
+    """v1.8.0: Wrapper around PATH_MANAGER.get_project_llm_dir()"""
+    return PATH_MANAGER.get_project_llm_dir(state)
 
 
 def get_project_director_dir(state: Dict[str, Any]) -> Path:
-    """Get Director subdirectory for project - stores LLM prompts and responses for fine-tuning."""
-    director_dir = get_project_folder(state) / "director"
-    director_dir.mkdir(parents=True, exist_ok=True)
-    return director_dir
+    """v1.8.0: Wrapper around PATH_MANAGER.get_project_director_dir()"""
+    return PATH_MANAGER.get_project_director_dir(state)
 
 
 def save_llm_response(state: Dict[str, Any], name: str, response: Any) -> Path:
@@ -179,18 +160,18 @@ def download_image_locally(
             rel_path = local_path.relative_to(DATA)
             return f"/renders/{rel_path.as_posix()}"
         else:
-            # Legacy behavior
+            # Legacy behavior - save to temp dir
             import hashlib
             url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
             local_filename = f"{project_id}_{prefix}_{url_hash}{ext}"
-            local_path = RENDERS_DIR / local_filename
+            local_path = PATH_MANAGER.temp_dir / local_filename
             
             if not local_path.exists():
                 r = requests.get(url, timeout=60)
                 if r.status_code == 200:
                     local_path.write_bytes(r.content)
             
-            return f"/renders/{local_filename}"
+            return PATH_MANAGER.to_url(local_path)
     except Exception as e:
         print(f"[WARN] Failed to download image locally: {e}")
         return url
@@ -318,8 +299,11 @@ def validate_project_state(state: Dict[str, Any], strict: bool = False) -> Tuple
 # ========= Project Persistence =========
 
 def project_path(pid: str) -> Path:
-    """Get path to project JSON file."""
-    return PROJECTS_DIR / f"{pid}.json"
+    """
+    v1.8.0: Get path to project JSON file in workspace/projects/.
+    This is the fallback storage for projects without a custom project_location.
+    """
+    return PATH_MANAGER.workspace_root / "projects" / f"{pid}.json"
 
 
 def load_project(pid: str) -> Dict[str, Any]:
@@ -353,11 +337,12 @@ def recover_orphaned_renders(state: Dict[str, Any], pid: str) -> Dict[str, Any]:
         if render.get("image_url") and render.get("status") == "done":
             continue
         
-        # Look for matching files in renders directory
+        # Look for matching files in project renders directory
+        renders_dir = get_project_renders_dir(state)
         for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-            for f in RENDERS_DIR.glob(f"{pid}_{shot_id}*{ext}"):
+            for f in renders_dir.glob(f"{pid}_{shot_id}*{ext}"):
                 if f.exists():
-                    local_url = f"/renders/{f.name}"
+                    local_url = PATH_MANAGER.to_url(f)
                     shot["render"] = {
                         "status": "done",
                         "image_url": local_url,
@@ -382,10 +367,11 @@ def recover_orphaned_renders(state: Dict[str, Any], pid: str) -> Dict[str, Any]:
             continue
         
         # Look for scene decor files
+        renders_dir = get_project_renders_dir(state)
         for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-            for f in RENDERS_DIR.glob(f"{pid}_{scene_id}_decor*{ext}"):
+            for f in renders_dir.glob(f"{pid}_{scene_id}_decor*{ext}"):
                 if f.exists():
-                    local_url = f"/renders/{f.name}"
+                    local_url = PATH_MANAGER.to_url(f)
                     scene["decor_refs"] = [local_url]
                     recovered += 1
                     print(f"[INFO] Recovered decor for {scene_id}: {local_url}")
@@ -491,9 +477,14 @@ def new_project(
 
 
 def list_projects() -> List[Dict[str, Any]]:
-    """List all projects with metadata."""
+    """
+    v1.8.0: List all projects with metadata.
+    Scans workspace/projects/ for JSON files.
+    """
     projects = []
-    for p in PROJECTS_DIR.glob("*.json"):
+    projects_dir = PATH_MANAGER.workspace_root / "projects"
+    projects_dir.mkdir(parents=True, exist_ok=True)
+    for p in projects_dir.glob("*.json"):
         if p.name.startswith("."):
             continue
         try:

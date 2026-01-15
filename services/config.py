@@ -30,17 +30,43 @@ def get_project_lock(project_id: str) -> threading.Lock:
 # ========= Storage Paths =========
 BASE = Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
+CONTRACTS_DIR = BASE / "Contracts"
+
+# Legacy paths (for backwards compatibility - use PathManager instead)
 PROJECTS_DIR = DATA / "projects"
 UPLOADS_DIR = DATA / "uploads"
 RENDERS_DIR = DATA / "renders"
 DEBUG_DIR = DATA / "debug"
-CONTRACTS_DIR = BASE / "Contracts"
 
-# Create directories
+# Create default directories
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 RENDERS_DIR.mkdir(parents=True, exist_ok=True)
 DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+# ========= Path Manager (User-configurable workspace) =========
+def get_path_manager():
+    """
+    Get PathManager instance with user settings.
+    Lazy import to avoid circular dependencies.
+    """
+    from .settings_service import get_workspace_root
+    from .path_service import PathManager
+    
+    workspace_root = get_workspace_root()
+    return PathManager(workspace_root)
+
+# Global PathManager instance
+PATH_MANAGER = None
+
+def init_path_manager():
+    """Initialize global PathManager instance."""
+    global PATH_MANAGER
+    PATH_MANAGER = get_path_manager()
+    return PATH_MANAGER
+
+# Initialize on module load
+PATH_MANAGER = init_path_manager()
 
 # ========= Export Status (in-memory) =========
 EXPORT_STATUS: Dict[str, Dict[str, Any]] = {}

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
-from .config import DATA, RENDERS_DIR
+from .config import PATH_MANAGER
 from .project_service import (
     sanitize_filename,
     get_project_video_dir,
@@ -126,14 +126,14 @@ def concat_clips_with_audio(
 # ========= Video Export =========
 
 def resolve_image_path(img_url: str) -> Optional[Path]:
-    """Resolve render URL to file path."""
-    if img_url.startswith("/renders/"):
-        rel_path = img_url[9:]  # Strip /renders/
-        if rel_path.startswith("projects/"):
-            img_path = DATA / rel_path
-        else:
-            img_path = RENDERS_DIR / rel_path
+    """
+    v1.8.0: Resolve render URL to file path using PATH_MANAGER.
+    """
+    if img_url.startswith("/"):
+        # URL path - convert using PATH_MANAGER
+        img_path = PATH_MANAGER.from_url(img_url)
     else:
+        # Absolute path
         img_path = Path(img_url)
     
     return img_path if img_path.exists() else None

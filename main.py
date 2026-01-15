@@ -1,6 +1,7 @@
 import os, json, time, uuid, asyncio, threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
+from contextlib import asynccontextmanager
 
 import requests
 import fal_client
@@ -12,7 +13,7 @@ from jsonschema import validate, ValidationError, Draft202012Validator
 from services.config import (
     VERSION,
     PROJECT_LOCKS, PROJECT_LOCKS_LOCK, get_project_lock,
-    BASE, DATA, PROJECTS_DIR, UPLOADS_DIR, RENDERS_DIR, DEBUG_DIR,
+    BASE, DATA, PATH_MANAGER,
     FAL_KEY, OPENAI_KEY, CLAUDE_KEY,
     FAL_AUDIO, FAL_WHISPER,
     FAL_NANOBANANA, FAL_NANOBANANA_EDIT,
@@ -96,12 +97,14 @@ from services.ui_service import (
 # v1.6.9: STYLE_PRESETS, style_tokens, style_script_notes imported from services.styles
 
 # ========= App =========
-app = FastAPI()
-
-# v1.4.2: Fetch live pricing on startup
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Fetch live pricing
     fetch_live_pricing()
+    yield
+    # Shutdown: cleanup if needed (currently none)
+
+app = FastAPI(lifespan=lifespan)
 
 # v1.6.9: now_iso, require_key, fal_headers imported from services.config
 # v1.6.9: call_img2img_editor imported from services.render_service
@@ -189,17 +192,53 @@ def static_logo():
     from fastapi.responses import FileResponse
     return FileResponse(str(LOGO_PATH), media_type="image/png")
 
+@app.get("/files/{filepath:path}")
+def serve_file(filepath: str):
+    """
+    v1.8.0: Serve any file from workspace root.
+    Supports user-configurable workspace location.
+    """
+    from fastapi.responses import FileResponse
+    from services.config import PATH_MANAGER
+    
+    try:
+        # Construct full path
+        full_path = PATH_MANAGER.workspace_root / filepath
+        
+        # Security: prevent path traversal
+        full_path = full_path.resolve()
+        if not full_path.is_relative_to(PATH_MANAGER.workspace_root.resolve()):
+            raise HTTPException(403, "Access denied")
+        
+        if not full_path.exists():
+            raise HTTPException(404, f"File not found: {filepath}")
+        
+        return FileResponse(str(full_path), media_type=get_media_type(filepath))
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error serving file: {str(e)}")
+
 @app.get("/renders/{filepath:path}")
 def serve_render(filepath: str):
-    """v1.6.1: Serve locally stored renders, including project subfolders."""
-    from fastapi.responses import FileResponse
+    """
+    v1.6.1: Serve locally stored renders, including project subfolders.
+    v1.8.0: Legacy endpoint - redirects to /files/
+    """
+    from fastapi.responses import FileResponse, RedirectResponse
     
-    file_path = resolve_render_path(filepath)
-    
-    if not file_path.exists():
-        raise HTTPException(404, f"Render not found: {filepath}")
-    
-    return FileResponse(str(file_path), media_type=get_media_type(filepath))
+    # Try new /files/ endpoint first
+    try:
+        return serve_file(filepath)
+    except:
+        # Fallback to old logic for backwards compatibility
+        file_path = resolve_render_path(filepath)
+        
+        if not file_path.exists():
+            raise HTTPException(404, f"Render not found: {filepath}")
+        
+        return FileResponse(str(file_path), media_type=get_media_type(filepath))
 
 # v1.6.9: resolve_render_path imported from services.render_service
 
@@ -352,6 +391,26 @@ def api_lock_cast(project_id: str, payload: Dict[str,Any]):
     save_project(state)
     return {"cast_locked": locked}
 
+@app.post("/api/project/{project_id}/location")
+def api_set_project_location(project_id: str, payload: Dict[str, Any]):
+    """v1.8.0: Set custom project location (folder where JSON is saved)."""
+    state = load_project(project_id)
+    location = payload.get("location")
+    
+    if not location:
+        raise HTTPException(400, "Missing location parameter")
+    
+    # Validate path exists
+    location_path = Path(location)
+    if not location_path.exists() or not location_path.is_dir():
+        raise HTTPException(400, f"Invalid location: {location}")
+    
+    state["project"]["project_location"] = str(location_path)
+    save_project(state)
+    
+    print(f"[INFO] Project {project_id} location set to: {location}")
+    return {"project_location": str(location_path)}
+
 # v1.5.3: Update project settings (render_models, etc.)
 @app.post("/api/project/{project_id}/settings")
 def api_update_settings(project_id: str, payload: Dict[str,Any]):
@@ -387,6 +446,26 @@ def api_import_project(payload: Dict[str,Any]):
 
     save_project(payload, validate=False, force=True)
     return {"imported": True, "project_id": payload["project"]["id"]}
+
+# ========= API: Maintenance =========
+@app.post("/api/cleanup/temp")
+def api_cleanup_temp(max_age_hours: int = 24):
+    """
+    v1.8.0: Clean up temporary files older than max_age_hours.
+    """
+    removed = PATH_MANAGER.cleanup_temp(max_age_hours)
+    return {
+        "status": "ok",
+        "removed": removed,
+        "max_age_hours": max_age_hours
+    }
+
+@app.get("/api/workspace/info")
+def api_workspace_info():
+    """
+    v1.8.0: Get information about current workspace configuration.
+    """
+    return PATH_MANAGER.get_info()
 
 @app.post("/api/project/{project_id}/llm")
 def api_set_llm(project_id: str, payload: Dict[str,Any]):
@@ -613,18 +692,17 @@ async def api_cast(project_id: str, file: UploadFile = File(...), role: str = Fo
         ext = "." + file.filename.split(".")[-1].lower()
     
     # v1.5.9.1: Save cast image to project folder
-    renders_dir = get_project_renders_dir(state)
+    renders_dir = PATH_MANAGER.get_project_renders_dir(state)
     safe_name = sanitize_filename(name or cast_id, 20)
     local_filename = f"Cast_{safe_name}_Source{ext}"
     local_path = renders_dir / local_filename
     file_bytes = await file.read()
     local_path.write_bytes(file_bytes)
-    # URL relative to DATA for serve_render
-    rel_path = local_path.relative_to(DATA)
-    local_url = f"/renders/{rel_path.as_posix()}"
+    # URL using PATH_MANAGER
+    local_url = PATH_MANAGER.to_url(local_path)
     
     # Also upload to FAL for img2img processing (temp file)
-    tmp_path = UPLOADS_DIR / f"temp_{project_id}_{cast_id}{ext}"
+    tmp_path = PATH_MANAGER.create_temp_file(f"cast_{project_id}_{cast_id}", ext)
     tmp_path.write_bytes(file_bytes)
 
     try:
@@ -662,7 +740,7 @@ async def api_cast_add_ref(project_id: str, cast_id: str, file: UploadFile = Fil
     ext = ""
     if file.filename and "." in file.filename:
         ext = "." + file.filename.split(".")[-1].lower()
-    tmp_path = UPLOADS_DIR / f"{project_id}_{cast_id}_ref{len(refs)+1}{ext}"
+    tmp_path = PATH_MANAGER.create_temp_file(f"{project_id}_{cast_id}_ref{len(refs)+1}", ext)
     tmp_path.write_bytes(await file.read())
 
     try:
@@ -902,7 +980,7 @@ async def api_cast_upload_ref(project_id: str, cast_id: str, ref_type: str, file
     if ext not in [".png", ".jpg", ".jpeg", ".webp"]:
         ext = ".png"
     
-    renders_dir = get_project_renders_dir(state)
+    renders_dir = PATH_MANAGER.get_project_renders_dir(state)
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)
     local_filename = f"Cast_{cast_name}_Ref{ref_type.upper()}{ext}"
     local_path = renders_dir / local_filename
@@ -911,9 +989,8 @@ async def api_cast_upload_ref(project_id: str, cast_id: str, ref_type: str, file
     with open(local_path, "wb") as f:
         f.write(contents)
     
-    # URL relative to DATA
-    rel_path = local_path.relative_to(DATA)
-    local_url = f"/renders/{rel_path.as_posix()}"
+    # URL using PATH_MANAGER
+    local_url = PATH_MANAGER.to_url(local_path)
     
     # Update state
     char_refs = state.setdefault("cast_matrix", {}).setdefault("character_refs", {}).setdefault(cast_id, {})
@@ -1225,7 +1302,7 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
     
     # Upload current image as reference
     if current_image.startswith("/renders/"):
-        local_file = RENDERS_DIR / current_image.replace("/renders/", "")
+        local_file = PATH_MANAGER.from_url(current_image)
         if local_file.exists():
             uploaded_url = fal_client.upload_file(str(local_file))
         else:
@@ -1384,15 +1461,14 @@ async def api_castmatrix_import_scene(project_id: str, scene_id: str, file: Uplo
     if file.filename and "." in file.filename:
         ext = "." + file.filename.split(".")[-1].lower()
     
-    renders_dir = get_project_renders_dir(state)
+    renders_dir = PATH_MANAGER.get_project_renders_dir(state)
     scene_num = scene_id.replace("scene_", "")
     local_filename = f"Sce{scene_num}_Import{ext}"
     local_path = renders_dir / local_filename
     local_path.write_bytes(await file.read())
     
-    # URL relative to DATA
-    rel_path = local_path.relative_to(DATA)
-    local_url = f"/renders/{rel_path.as_posix()}"
+    # URL using PATH_MANAGER
+    local_url = PATH_MANAGER.to_url(local_path)
     scene["decor_refs"] = [local_url]
     save_project(state)
     
@@ -2215,7 +2291,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     
     # 1. Upload current render as primary reference
     if current_render_url.startswith("/renders/"):
-        local_file = RENDERS_DIR / current_render_url.replace("/renders/", "")
+        local_file = PATH_MANAGER.from_url(current_render_url)
         if local_file.exists():
             try:
                 uploaded_url = fal_client.upload_file(str(local_file))
@@ -2229,7 +2305,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     # v1.5.4: Add reference image from another shot if provided
     if ref_image:
         if ref_image.startswith("/renders/"):
-            local_file = RENDERS_DIR / ref_image.replace("/renders/", "")
+            local_file = PATH_MANAGER.from_url(ref_image)
             if local_file.exists():
                 try:
                     uploaded_url = fal_client.upload_file(str(local_file))
@@ -2248,7 +2324,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
             ref_url = refs.get(ref_type)
             if ref_url:
                 if ref_url.startswith("/renders/"):
-                    local_file = RENDERS_DIR / ref_url.replace("/renders/", "")
+                    local_file = PATH_MANAGER.from_url(ref_url)
                     if local_file.exists():
                         try:
                             uploaded_url = fal_client.upload_file(str(local_file))
@@ -2407,10 +2483,10 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
             # v1.7.1: Use ONLY new project folder structure
             if img_url.startswith("/renders/"):
                 rel_path = img_url[9:]  # Strip /renders/
-                img_path = DATA / rel_path
+                img_path = PATH_MANAGER.workspace_root / rel_path
             else:
                 # Handle absolute paths or relative paths
-                img_path = Path(img_url) if Path(img_url).is_absolute() else DATA / img_url
+                img_path = Path(img_url) if Path(img_url).is_absolute() else PATH_MANAGER.workspace_root / img_url
             
             if not img_path.exists():
                 print(f"[ERROR] Shot {shot.get('shot_id')} image not found: {img_path}")

@@ -14,7 +14,7 @@ const DEFAULT_AUDIO_PROMPT = `Analyze this audio and return ONLY a JSON object w
 Include: BPM detection, music style/genre, song structure sections with timestamps, dynamics/energy levels, vocal delivery analysis, narrative story arc, and full lyrics transcription with timestamps.`;
 
 let PROJECT_STATE = null;
-let SELECTED_SEQUENCE_ID = null;
+let SELECTED_SEQUENCE_IDS = [];
 let AUDIO_DATA = {};
 
 // v1.5.3: Unified Render Queue System for shots, scenes, and cast refs
@@ -343,16 +343,20 @@ async function saveProjectToFile() {
     setStatus("Preparing save…", null);
     const state = await apiCall(`/api/project/${pid()}`);
     
+    const title = (state.project?.title || "project").replace(/[^a-z0-9]/gi, "_");
+    const filename = `BXLSTNRD_${title}_${pid().slice(0, 8)}.json`;
+    
+    // Use traditional download (works everywhere)
+    // Modern file pickers don't give us full path in browser
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const title = (state.project?.title || "project").replace(/[^a-z0-9]/gi, "_");
-    a.download = `BXLSTNRD_${title}_${pid().slice(0, 8)}.json`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
     
-    setStatus("Project saved", 100);
+    setStatus("Project saved - LOAD the file to set location", 100);
   } catch (e) {
     showError(e.message);
   }
@@ -365,6 +369,20 @@ function loadProjectFromFile() {
   input.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    
+    // Get the file path from webkitRelativePath or file.path (Electron/desktop)
+    let filePath = file.path || file.webkitRelativePath || '';
+    
+    // If we have file.path (desktop environment), extract directory
+    let projectLocation = null;
+    if (filePath) {
+      // Extract parent directory
+      const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+      if (lastSlash > 0) {
+        projectLocation = filePath.substring(0, lastSlash);
+      }
+    }
+    
     try {
       setStatus("Loading project…", null);
       const text = await file.text();
@@ -372,13 +390,25 @@ function loadProjectFromFile() {
       
       if (!state.project?.id) throw new Error("Invalid project file");
       
+      // Use extracted location, or saved location from state, or ask backend to infer
+      const savedLocation = state.project?.project_location;
+      projectLocation = projectLocation || savedLocation;
+      
+      // Save location in state if we have it
+      if (projectLocation) {
+        state.project.project_location = projectLocation;
+      }
+      
       await apiCall("/api/project/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: text
+        body: JSON.stringify(state)
       });
       
       document.getElementById("projectId").value = state.project.id;
+      if (projectLocation) {
+        document.getElementById("projectLocation").value = projectLocation;
+      }
       document.getElementById("title").value = state.project.title || "";
       document.getElementById("style").value = state.project.style_preset || "";
       document.getElementById("aspect").value = state.project.aspect || "horizontal";
@@ -1687,7 +1717,7 @@ function updateSceneCard(sceneId) {
 }
 
 async function sceneToShots() {
-  if (!SELECTED_SEQUENCE_ID) {
+  if (SELECTED_SEQUENCE_IDS.length === 0) {
     showError("Select a scene from timeline");
     return;
   }
@@ -1696,7 +1726,7 @@ async function sceneToShots() {
     await apiCall(`/api/project/${pid()}/shots/expand_sequence`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sequence_id: SELECTED_SEQUENCE_ID })
+      body: JSON.stringify({ sequence_id: SELECTED_SEQUENCE_IDS[0] })
     });
     setStatus("Shots created", 100, "storyboardStatus");
     await refreshFromServer();
@@ -1751,7 +1781,7 @@ function renderTimeline(state) {
   
   // v1.5.4: Timeline with scene cards including edit prompt
   container.innerHTML = `<div class="timeline-segments-v2">${seqs.map((seq, idx) => {
-    const selected = SELECTED_SEQUENCE_ID === seq.sequence_id ? "selected" : "";
+    const selected = SELECTED_SEQUENCE_IDS.includes(seq.sequence_id) ? "selected" : "";
     const scene = scenes.find(s => s.sequence_id === seq.sequence_id) || scenes[idx];
     const hasScene = !!scene;
     const thumb = scene?.decor_refs?.[0] || "";
@@ -1761,7 +1791,7 @@ function renderTimeline(state) {
     const hasWardrobe = scene?.wardrobe?.trim();
     
     return `
-      <div class="timeline-seg-v2 ${selected} ${inQueue ? 'in-queue' : ''}" onclick="selectSequence('${seq.sequence_id}')" data-scene-id="${scene?.scene_id || ''}">
+      <div class="timeline-seg-v2 ${selected} ${inQueue ? 'in-queue' : ''}" onclick="selectSequence('${seq.sequence_id}', event)" data-scene-id="${scene?.scene_id || ''}">
         <div class="timeline-seg-thumb" onclick="event.stopPropagation(); ${thumb ? `showScenePopup('${scene?.scene_id}')` : ''}">
           ${thumb
             ? `<img src="${cacheBust(thumb)}"/>`
@@ -1780,8 +1810,19 @@ function renderTimeline(state) {
   }).join("")}</div>`;
 }
 
-function selectSequence(seqId) {
-  SELECTED_SEQUENCE_ID = seqId;
+function selectSequence(seqId, event) {
+  if (event?.shiftKey) {
+    // SHIFT+CLICK: toggle in multi-selectie
+    const idx = SELECTED_SEQUENCE_IDS.indexOf(seqId);
+    if (idx >= 0) {
+      SELECTED_SEQUENCE_IDS.splice(idx, 1);
+    } else {
+      SELECTED_SEQUENCE_IDS.push(seqId);
+    }
+  } else {
+    // Normale click: enkelvoudige selectie
+    SELECTED_SEQUENCE_IDS = [seqId];
+  }
   renderTimeline(PROJECT_STATE);
   renderShots(PROJECT_STATE);
   updateButtonStates();
@@ -2146,8 +2187,8 @@ function renderShots(state) {
   const badge = document.getElementById("shotsCount");
   
   const allShots = state.storyboard?.shots || [];
-  const shots = SELECTED_SEQUENCE_ID 
-    ? allShots.filter(s => s.sequence_id === SELECTED_SEQUENCE_ID)
+  const shots = SELECTED_SEQUENCE_IDS.length > 0
+    ? allShots.filter(s => SELECTED_SEQUENCE_IDS.includes(s.sequence_id))
     : allShots;
   
   badge.textContent = shots.length;
@@ -2488,8 +2529,8 @@ let NEGATIVE_PROMPT_OVERRIDE = "";
 async function renderAllShots() {
   try {
     const allShots = PROJECT_STATE?.storyboard?.shots || [];
-    const shotsToRender = SELECTED_SEQUENCE_ID
-      ? allShots.filter(s => s.sequence_id === SELECTED_SEQUENCE_ID && !s.render?.image_url)
+    const shotsToRender = SELECTED_SEQUENCE_IDS.length > 0
+      ? allShots.filter(s => SELECTED_SEQUENCE_IDS.includes(s.sequence_id) && !s.render?.image_url)
       : allShots.filter(s => !s.render?.image_url);
 
     if (!shotsToRender.length) {
@@ -3206,6 +3247,262 @@ async function downloadVideo(url, filename) {
   }
 }
 
+// ========= Animate Module =========
+
+let ANIMATION_QUEUE = [];
+let ACTIVE_ANIMATIONS = 0;
+const MAX_CONCURRENT_ANIMATIONS = 3;
+let STOP_ANIMATION_REQUESTED = false;
+
+async function animateShot(shotId) {
+  const videoModel = document.getElementById("videoModel")?.value || "none";
+  
+  if (videoModel === "none") {
+    showError("Select a video model in PROJECT settings first");
+    return;
+  }
+  
+  setModuleStatus("animate", "processing", "Animating shot...");
+  
+  try {
+    const response = await fetch(
+      `/api/project/${pid()}/shot/${shotId}/animate`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ video_model: videoModel })
+      }
+    );
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      setModuleStatus("animate", "done", `Shot animated! Cost: $${result.cost.toFixed(4)}`);
+      await refreshFromServer();
+      updateAnimationStats();
+    } else {
+      setModuleStatus("animate", "error", result.error || "Animation failed");
+    }
+  } catch (error) {
+    console.error("[Animate] Animation error:", error);
+    setModuleStatus("animate", "error", error.message);
+  }
+}
+
+async function animateAllShots() {
+  if (!PROJECT_STATE) {
+    showError("No project loaded");
+    return;
+  }
+  
+  const videoModel = document.getElementById("videoModel")?.value || "none";
+  
+  if (videoModel === "none") {
+    showError("Select a video model in PROJECT settings first");
+    return;
+  }
+  
+  // Collect all shot IDs that need animation
+  const shotIds = [];
+  for (const seq of PROJECT_STATE.sequences || []) {
+    for (const shot of seq.shots || []) {
+      if (shot.render_url && !shot.video_url) {
+        shotIds.push(shot.shot_id);
+      }
+    }
+  }
+  
+  if (shotIds.length === 0) {
+    showError("No shots available to animate. Render shots first in STORYBOARD section.");
+    return;
+  }
+  
+  STOP_ANIMATION_REQUESTED = false;
+  setModuleStatus("animate", "processing", `Starting animation of ${shotIds.length} shots...`);
+  document.getElementById("stopAnimateBtn").classList.remove("hidden");
+  document.getElementById("animateAllBtn").disabled = true;
+  document.getElementById("animateSequenceBtn").disabled = true;
+  
+  try {
+    const response = await fetch(
+      `/api/project/${pid()}/shots/animate-batch`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          shot_ids: shotIds,
+          video_model: videoModel
+        })
+      }
+    );
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      setModuleStatus(
+        "animate", 
+        "done", 
+        `${result.animated_count}/${shotIds.length} shots animated. Cost: $${result.total_cost.toFixed(2)}`
+      );
+      await refreshFromServer();
+      updateAnimationStats();
+      renderShotVideosGrid();
+    } else {
+      setModuleStatus("animate", "error", result.error || "Batch animation failed");
+    }
+  } catch (error) {
+    console.error("[Animate] Batch animation error:", error);
+    setModuleStatus("animate", "error", error.message);
+  } finally {
+    document.getElementById("stopAnimateBtn").classList.add("hidden");
+    document.getElementById("animateAllBtn").disabled = false;
+    document.getElementById("animateSequenceBtn").disabled = false;
+  }
+}
+
+async function animateSelectedSequence() {
+  if (!PROJECT_STATE || SELECTED_SEQUENCE_IDS.length === 0) {
+    showError("No sequence selected. Select a sequence first.");
+    return;
+  }
+  
+  const videoModel = document.getElementById("videoModel")?.value || "none";
+  
+  if (videoModel === "none") {
+    showError("Select a video model in PROJECT settings first");
+    return;
+  }
+  
+  // Find shots in selected sequence
+  const sequence = PROJECT_STATE.sequences?.find(s => s.sequence_id === SELECTED_SEQUENCE_IDS[0]);
+  if (!sequence) {
+    showError("Selected sequence not found");
+    return;
+  }
+  
+  const shotIds = sequence.shots
+    ?.filter(shot => shot.render_url && !shot.video_url)
+    ?.map(shot => shot.shot_id) || [];
+  
+  if (shotIds.length === 0) {
+    showError("No shots to animate in this sequence. Render shots first.");
+    return;
+  }
+  
+  setModuleStatus("animate", "processing", `Animating ${shotIds.length} shots in sequence...`);
+  
+  try {
+    const response = await fetch(
+      `/api/project/${pid()}/shots/animate-batch`,
+      {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          shot_ids: shotIds,
+          video_model: videoModel
+        })
+      }
+    );
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      setModuleStatus("animate", "done", `Sequence animated: ${result.animated_count} shots, $${result.total_cost.toFixed(2)}`);
+      await refreshFromServer();
+      updateAnimationStats();
+      renderShotVideosGrid();
+    }
+  } catch (error) {
+    console.error("[Animate] Sequence animation error:", error);
+    setModuleStatus("animate", "error", error.message);
+  }
+}
+
+function stopAnimationQueue() {
+  STOP_ANIMATION_REQUESTED = true;
+  document.getElementById("stopAnimateBtn").classList.add("hidden");
+  setModuleStatus("animate", "warning", "Stopping animation queue...");
+}
+
+async function updateAnimationStats() {
+  try {
+    const data = await apiCall(`/api/project/${pid()}/animation-status`);
+    
+    document.getElementById("animatedCount").textContent = data.animated_shots || 0;
+    document.getElementById("totalShotsCount").textContent = data.total_shots || 0;
+    document.getElementById("animationQueueCount").textContent = data.pending_shots || 0;
+    
+    // Calculate ETA (assuming 30 sec per shot)
+    const eta = (data.pending_shots || 0) * 30;
+    const minutes = Math.floor(eta / 60);
+    const seconds = eta % 60;
+    document.getElementById("animationETA").textContent = 
+      eta > 0 ? `${minutes}m ${seconds}s` : "--";
+  } catch (error) {
+    console.error("[Animate] Stats update error:", error);
+  }
+}
+
+function renderShotVideosGrid() {
+  if (!PROJECT_STATE) return;
+  
+  const grid = document.getElementById("shotVideosGrid");
+  grid.innerHTML = "";
+  
+  let hasAnyContent = false;
+  
+  for (const seq of PROJECT_STATE.sequences || []) {
+    for (const shot of seq.shots || []) {
+      const videoUrl = shot.video_url;
+      const renderUrl = shot.render_url;
+      
+      if (!videoUrl && !renderUrl) continue;
+      
+      hasAnyContent = true;
+      const card = document.createElement("div");
+      card.className = "shot-card";
+      card.style.position = "relative";
+      
+      if (videoUrl) {
+        // Show video player
+        card.innerHTML = `
+          <video src="${cacheBust(videoUrl)}" controls loop muted playsinline
+                 style="width:100%; height:180px; object-fit:cover; border-radius: 4px;">
+          </video>
+          <span class="shot-badge" style="position: absolute; top: 8px; right: 8px; background: #10b981; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">VIDEO</span>
+          <div class="shot-info" style="padding: 8px; font-size: 12px;">
+            <strong>${shot.shot_type || 'Shot'}</strong> - ${shot.video_duration || 4}s
+            <div style="color: #94a3b8; font-size: 11px; margin-top: 2px;">
+              ${shot.motion_level || 'moderate'} motion, ${shot.camera_move || 'auto'} camera
+            </div>
+          </div>
+        `;
+      } else if (renderUrl) {
+        // Show static image with animate button
+        card.innerHTML = `
+          <img src="${cacheBust(renderUrl)}" style="width:100%; height:180px; object-fit:cover; border-radius: 4px;"/>
+          <button class="shot-animate-btn" onclick="animateShot('${shot.shot_id}')" 
+                  style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                         background: rgba(16, 185, 129, 0.9); color: white; border: none; 
+                         padding: 12px 24px; border-radius: 6px; cursor: pointer; font-weight: 600;
+                         font-size: 14px;">
+            ▶ Animate
+          </button>
+          <div class="shot-info" style="padding: 8px; font-size: 12px;">
+            <strong>${shot.shot_type || 'Shot'}</strong>
+          </div>
+        `;
+      }
+      
+      grid.appendChild(card);
+    }
+  }
+  
+  if (!hasAnyContent) {
+    grid.innerHTML = '<div class="muted" style="padding: 24px; text-align: center;">No rendered shots yet. Complete storyboard rendering first.</div>';
+  }
+}
+
 // Init - show default state
 document.addEventListener("DOMContentLoaded", async () => {
   setStatus("Ready", 0);
@@ -3221,6 +3518,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         updateAudioButtons();
       }
       // syncProjectSettings already called in refreshFromServer, includes use_whisper
+      
+      // Initialize Shot2Video stats
+      updateAnimationStats();
+      renderShotVideosGrid();
     } catch (e) {
       console.warn("Failed to restore project on page load:", e);
     }

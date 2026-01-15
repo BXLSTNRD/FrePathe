@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.7.3 (2026-01-15) - MULTI-SCENE SELECTION & UI ALIGNMENT
+
+### UI Improvements
+- **Shots header alignment**: "Shots (count)" now left-aligned next to collapse button
+  - Changed `.section-header` from `justify-content: space-between` to `flex-start`
+  - Added `gap: 12px` for consistent spacing
+  - Buttons remain right-aligned via `margin-left: auto`
+
+### Timeline Enhancements
+- **Multi-scene selection**: SHIFT+CLICK to select multiple scenes in timeline
+  - Normal click: single scene selection (existing behavior preserved)
+  - SHIFT+CLICK: toggle scene in/out of selection
+  - Shot grid displays all shots from all selected scenes
+  - Selected scenes highlighted simultaneously in timeline
+  - Render operations work across all selected scenes
+
+### Technical Changes
+- Converted `SELECTED_SEQUENCE_ID` (single) → `SELECTED_SEQUENCE_IDS` (array)
+- Updated `selectSequence()` to handle SHIFT+CLICK event detection
+- Modified shot filtering to use `Array.includes()` for multi-scene support
+- All sequence-dependent operations now support multi-selection
+
+---
+
 ## v1.7.2 (2026-01-15) - PERFORMANCE & REFRESH OPTIMIZATION
 
 ### Performance Improvements

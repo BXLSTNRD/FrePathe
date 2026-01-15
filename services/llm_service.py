@@ -11,7 +11,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from .config import (
-    CLAUDE_KEY, OPENAI_KEY, UPLOADS_DIR,
+    CLAUDE_KEY, OPENAI_KEY, PATH_MANAGER,
     require_key, track_cost
 )
 
@@ -102,11 +102,10 @@ def call_claude_json(
     blocks = data.get("content", [])
     txt = "".join([b.get("text", "") for b in blocks if b.get("type") == "text"]).strip()
     
-    # Debug: save raw response
+    # Debug: save raw response to temp
     try:
-        (UPLOADS_DIR / f"claude_last_raw_{int(time.time())}.txt").write_text(
-            txt or "<EMPTY>", encoding="utf-8"
-        )
+        debug_file = PATH_MANAGER.create_temp_file(f"claude_last_raw_{int(time.time())}", ".txt")
+        debug_file.write_text(txt or "<EMPTY>", encoding="utf-8")
     except Exception:
         pass
     

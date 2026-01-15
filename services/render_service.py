@@ -24,8 +24,7 @@ from .config import (
     require_key,
     retry_on_502,
     track_cost,
-    RENDERS_DIR,
-    DATA,
+    PATH_MANAGER,
     locked_model_key,
     locked_editor_key,
 )
@@ -261,15 +260,13 @@ def call_img2img_editor(
 
 def resolve_render_path(url_or_path: str) -> Path:
     """Resolve /renders/ URL or path to actual file path."""
-    filepath = url_or_path
-    if filepath.startswith("/renders/"):
-        filepath = filepath[9:]  # Strip /renders/
-    
-    # filepath can be: "filename.png" (legacy) or "projects/Title_vX/renders/filename.png" (v1.6.1)
-    if filepath.startswith("projects/"):
-        return DATA / filepath
+    # v1.8.0: Use PATH_MANAGER to resolve URLs to filesystem paths
+    if url_or_path.startswith("/"):
+        # It's a URL path - use PATH_MANAGER to convert
+        return PATH_MANAGER.from_url(url_or_path)
     else:
-        return RENDERS_DIR / filepath
+        # It's a relative path - resolve relative to workspace root
+        return PATH_MANAGER.workspace_root / url_or_path
 
 
 # ========= Shot Render Helpers =========

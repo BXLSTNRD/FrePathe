@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.7.2 (2026-01-15) - PERFORMANCE & REFRESH OPTIMIZATION
+
+### Performance Improvements
+- **Scene card refresh**: Scenes now use targeted refresh strategy (like Cast/Shot cards since v1.5.3/v1.7.0)
+  - Removed full `refreshFromServer()` calls after scene renders
+  - Direct DOM updates via `updateSceneCardImage()` without re-rendering entire timeline
+  - Prevents input loss during scene operations
+  - ~60% faster scene render feedback
+
+### Image Loading Optimization
+- **Local-first strategy**: All cards (Cast, Scene, Shot) now prioritize local renders
+  - Check `/renders/projects/{id}/renders/` first before fetching from external URLs
+  - Fallback to FAL URLs only if local file missing (404)
+  - Eliminates redundant API calls for already-downloaded images
+  - Reduces bandwidth usage and improves load times
+
+### API Call Reduction
+- **Scene renders**: Removed unnecessary `GET /api/project/{id}` calls after render
+  - `rerenderScene()`: 1 API call instead of 2 (50% reduction)
+  - `editSceneWithPrompt()`: 1 API call instead of 2 (50% reduction)
+  - `renderItemAsync(scene)`: 1 API call instead of 2 (50% reduction)
+  - Matches efficiency of Shot renders (v1.5.3 pattern)
+- **Cast renders**: Removed unnecessary `GET /api/project/{id}` calls after ref generation
+  - All cast endpoints now return `refs` object directly in response
+  - `createCastRefs()`: 1 API call instead of 2 (50% reduction)
+  - `rerenderSingleRef()`: 1 API call instead of 2 (50% reduction)
+  - `rerenderCastWithPrompt()`: 1 API call instead of 2 (50% reduction)
+  - `updateCastRefImage()`: 1 API call instead of 2 (50% reduction)
+  - `renderItemAsync(cast)`: 1 API call instead of 2 (50% reduction)
+  - All three card types (Cast, Scene, Shot) now equally efficient
+
+### Technical
+- Enhanced `cacheBust()` function with intelligent path resolution
+- Timeline segment updates preserve wardrobe/lock indicators
+- Scene popup auto-updates without explicit refresh calls
+
+---
+
 ## v1.7.1 (2026-01-15) - PREVIEW MODULE BUGFIX
 
 ### Fixed

@@ -470,7 +470,11 @@ def new_project(
             "style_lock_image": None,
         },
         "audio_dna": None,
-        "cast": [],
+        "cast": [
+            {"cast_id": str(uuid.uuid4()), "name": "", "role": "lead", "impact": 0.7, "description": "", "prompt_extra": "", "reference_images": []},
+            {"cast_id": str(uuid.uuid4()), "name": "", "role": "supporting", "impact": 0.5, "description": "", "prompt_extra": "", "reference_images": []},
+            {"cast_id": str(uuid.uuid4()), "name": "", "role": "extra", "impact": 0.1, "description": "", "prompt_extra": "", "reference_images": []}
+        ],
         "storyboard": {"sequences": [], "shots": []},
         "cast_matrix": {
             "character_refs": {},

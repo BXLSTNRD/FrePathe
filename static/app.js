@@ -29,8 +29,31 @@ let PENDING_CAST_REFS = new Set();  // Set of cast_ids currently generating refs
 function pid() { return document.getElementById("projectId").value.trim(); }
 
 // v1.6.5: Cache-busting for images - prevents browser from showing stale renders
+// v1.7.1: Local-first strategy - prefer local project renders, fallback to URL
 function cacheBust(url) {
   if (!url) return url;
+  
+  // If URL is external (https://), use as-is with cache bust
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    const sep = url.includes('?') ? '&' : '?';
+    return `${url}${sep}t=${Date.now()}`;
+  }
+  
+  // If URL is already /renders/ path, use as-is (already local)
+  if (url.startsWith('/renders/')) {
+    return url;
+  }
+  
+  // Otherwise assume it's a filename and try local first
+  // Format: /renders/projects/{project_id}/renders/{filename}
+  const projectId = pid();
+  if (projectId && !url.includes('projects/')) {
+    // Extract just the filename
+    const filename = url.split('/').pop().split('?')[0];
+    return `/renders/projects/${projectId}/renders/${filename}`;
+  }
+  
+  // Fallback: add cache bust
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}t=${Date.now()}`;
 }
@@ -1128,10 +1151,13 @@ async function updateCastRefImage(castId, refType, input) {
     const fd = new FormData();
     fd.append("file", f);
     
-    await apiCall(`/api/project/${pid()}/cast/${castId}/ref/${refType}`, { method: "POST", body: fd });
+    const result = await apiCall(`/api/project/${pid()}/cast/${castId}/ref/${refType}`, { method: "POST", body: fd });
     
     setStatus(`Ref ${refType.toUpperCase()} updated`, 100, "castStatus");
-    await refreshFromServer();
+    // v1.7.2: Use refs from response, no extra API call needed
+    if (result?.refs) {
+      updateCastCardRefs(castId, result.refs);
+    }
   } catch (e) {
     showError(e.message);
   }
@@ -1170,13 +1196,13 @@ async function createCastRefs(castId) {
     }
     
     setStatus("Generating refs…", null, "castStatus");
-    await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
+    const result = await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
     setStatus("Refs created", 100, "castStatus");
     
-    // v1.7.0: Update only this cast card, not entire list (prevents input loss)
-    const freshState = await apiCall(`/api/project/${pid()}`);
-    PROJECT_STATE = freshState;
-    updateCastCardRefs(castId, freshState);
+    // v1.7.2: Use refs from response, no extra API call needed
+    if (result?.refs) {
+      updateCastCardRefs(castId, result.refs);
+    }
   } catch (e) {
     showError(e.message);
   } finally {
@@ -1260,13 +1286,13 @@ async function updateCastPrompt(castId, promptExtra) {
 async function rerenderSingleRef(castId, refType) {
   try {
     setStatus(`Regenerating ref ${refType.toUpperCase()}…`, null, "castStatus");
-    await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/${refType}`, { method: "POST" });
+    const result = await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/${refType}`, { method: "POST" });
     setStatus(`Ref ${refType.toUpperCase()} regenerated`, 100, "castStatus");
     
-    // v1.7.0: Update only this cast card, not entire list
-    const freshState = await apiCall(`/api/project/${pid()}`);
-    PROJECT_STATE = freshState;
-    updateCastCardRefs(castId, freshState);
+    // v1.7.2: Use refs from response, no extra API call needed
+    if (result?.refs) {
+      updateCastCardRefs(castId, result.refs);
+    }
   } catch (e) {
     showError(e.message);
   }
@@ -1282,13 +1308,13 @@ async function rerenderCastWithPrompt(castId) {
   try {
     PENDING_CAST_REFS.add(castId);
     setStatus("Regenerating with extra prompt…", null, "castStatus");
-    await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
+    const result = await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
     setStatus("References regenerated", 100, "castStatus");
     
-    // v1.7.0: Update only this cast card, not entire list
-    const freshState = await apiCall(`/api/project/${pid()}`);
-    PROJECT_STATE = freshState;
-    updateCastCardRefs(castId, freshState);
+    // v1.7.2: Use refs from response, no extra API call needed
+    if (result?.refs) {
+      updateCastCardRefs(castId, result.refs);
+    }
   } catch (e) {
     showError(e.message);
   } finally {
@@ -1562,12 +1588,12 @@ async function rerenderScene(sceneId) {
   
   try {
     setStatus(`Re-rendering scene…`, null, "storyboardStatus");
-    await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/render`, { method: "POST" });
+    const result = await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/render`, { method: "POST" });
     setStatus("Scene re-rendered", 100, "storyboardStatus");
-    await refreshFromServer();
-    // Refresh popup if open
-    if (!document.getElementById("scenePopup").classList.contains("hidden")) {
-      showScenePopup(sceneId);
+    // v1.7.1: Use targeted update like shots (no extra API call)
+    if (result?.image_url) {
+      updateSceneCardImage(sceneId, result.image_url);
+      // Popup auto-updates via updateSceneCardImage
     }
   } catch (e) {
     showError(e.message);
@@ -1590,7 +1616,7 @@ async function editSceneWithPrompt(sceneId, editPrompt) {
   
   try {
     setStatus(`Editing scene…`, null, "storyboardStatus");
-    await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/edit`, {
+    const result = await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/edit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ edit_prompt: editPrompt.trim() })
@@ -1599,10 +1625,10 @@ async function editSceneWithPrompt(sceneId, editPrompt) {
     // Clear the popup input
     const input = document.getElementById("sceneRepromptInput");
     if (input) input.value = "";
-    await refreshFromServer();
-    // Refresh popup if open
-    if (!document.getElementById("scenePopup").classList.contains("hidden")) {
-      showScenePopup(sceneId);
+    // v1.7.1: Use targeted update like shots (no extra API call)
+    if (result?.image_url) {
+      updateSceneCardImage(sceneId, result.image_url);
+      // Popup auto-updates via updateSceneCardImage
     }
   } catch (e) {
     showError(e.message);
@@ -2584,11 +2610,11 @@ async function renderItemAsync(item) {
         updateShotCardImage(item.id, result.image_url);
       }
     } else if (item.type === "scene") {
-      await apiCall(`/api/project/${pid()}/castmatrix/scene/${item.id}/render`, { method: "POST" });
-      // v1.5.3: Refresh state to get new scene image and update timeline
-      const state = await apiCall(`/api/project/${pid()}`);
-      PROJECT_STATE = state;
-      renderTimeline(state);
+      const result = await apiCall(`/api/project/${pid()}/castmatrix/scene/${item.id}/render`, { method: "POST" });
+      // v1.7.1: Use targeted update like shots (no extra API call)
+      if (result?.image_url) {
+        updateSceneCardImage(item.id, result.image_url);
+      }
     } else if (item.type === "cast") {
       // v1.5.8: Skip if already pending elsewhere
       if (PENDING_CAST_REFS.has(item.id)) {
@@ -2598,11 +2624,11 @@ async function renderItemAsync(item) {
       }
       PENDING_CAST_REFS.add(item.id);
       try {
-        await apiCall(`/api/project/${pid()}/cast/${item.id}/canonical_refs`, { method: "POST" });
-        // v1.7.0: Refresh state and update cast card with new refs
-        const freshState = await apiCall(`/api/project/${pid()}`);
-        PROJECT_STATE = freshState;
-        updateCastCardRefs(item.id, freshState);
+        const result = await apiCall(`/api/project/${pid()}/cast/${item.id}/canonical_refs`, { method: "POST" });
+        // v1.7.2: Use refs from response, no extra API call needed
+        if (result?.refs) {
+          updateCastCardRefs(item.id, result.refs);
+        }
       } finally {
         PENDING_CAST_REFS.delete(item.id);
       }
@@ -2615,15 +2641,26 @@ async function renderItemAsync(item) {
 }
 
 // v1.7.0: Update cast card with new refs without re-rendering entire list
-function updateCastCardRefs(castId, state) {
+// v1.7.2: Accept optional refs parameter from API response for efficiency
+function updateCastCardRefs(castId, stateOrRefs) {
   const card = document.querySelector(`.cast-card[data-cast-id="${castId}"]`);
   if (!card) {
     console.warn(`[updateCastCardRefs] Card not found for ${castId}`);
     return;
   }
   
-  const charRefs = state?.cast_matrix?.character_refs || {};
-  const refs = charRefs[castId] || {};
+  // v1.7.2: Check if we got refs directly from API response
+  let refs;
+  if (stateOrRefs?.ref_a || stateOrRefs?.ref_b) {
+    // Direct refs object from API
+    refs = stateOrRefs;
+  } else {
+    // State object, extract refs from cast_matrix
+    const charRefs = stateOrRefs?.cast_matrix?.character_refs || {};
+    refs = charRefs[castId] || {};
+  }
+  
+  const isLocked = PROJECT_STATE?.project?.cast_locked || false;
   const isLocked = state?.project?.cast_locked || false;
   
   // Update ref_a thumbnail with click handler
@@ -2655,6 +2692,52 @@ function updateCastCardRefs(castId, state) {
   }
   
   console.log(`[updateCastCardRefs] Updated refs for ${castId}: ref_a=${!!refs.ref_a}, ref_b=${!!refs.ref_b}`);
+}
+
+// v1.7.1: Update scene card with rendered image without full refresh
+function updateSceneCardImage(sceneId, imageUrl) {
+  // Update PROJECT_STATE
+  const scenes = PROJECT_STATE?.cast_matrix?.scenes || [];
+  const scene = scenes.find(s => s.scene_id === sceneId);
+  if (scene) {
+    scene.decor_refs = scene.decor_refs || [];
+    scene.decor_refs[0] = imageUrl;
+  }
+
+  // Update timeline segment thumbnail
+  const segment = document.querySelector(`.timeline-seg-v2[data-scene-id="${sceneId}"]`);
+  if (segment) {
+    const thumb = segment.querySelector('.timeline-seg-thumb');
+    if (thumb) {
+      // Remove queue number/import button, add image with click handler
+      thumb.innerHTML = `<img src="${cacheBust(imageUrl)}"/>`;
+      thumb.onclick = (e) => { e.stopPropagation(); showScenePopup(sceneId); };
+      
+      // Re-add wardrobe and lock indicators if present
+      const hasWardrobe = scene?.wardrobe?.trim();
+      const decorLocked = scene?.decor_locked;
+      if (hasWardrobe) {
+        thumb.innerHTML += `<span class="wardrobe-indicator" title="${scene.wardrobe}"><svg viewBox="0 0 512 512" width="12" height="12" fill="currentColor"><path d="M256 96c-66 0-128 32-160 80-16 24-16 56 0 80 8 12 8 28 0 40l-32 48c-8 12-8 28 0 40 16 24 48 40 80 40h224c32 0 64-16 80-40 8-12 8-28 0-40l-32-48c-8-12-8-28 0-40 16-24 16-56 0-80-32-48-94-80-160-80z"/></svg></span>`;
+      }
+      if (decorLocked) {
+        thumb.innerHTML += `<span class="decor-lock-indicator"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/></svg></span>`;
+      }
+      segment.classList.remove('in-queue');
+    }
+  }
+
+  // Update scene popup if currently open
+  const popup = document.getElementById("scenePopup");
+  if (popup && !popup.classList.contains("hidden")) {
+    const popupImg = document.getElementById("scenePopupImage");
+    if (popupImg) {
+      popupImg.src = cacheBust(imageUrl);
+      popupImg.style.display = "block";
+      popupImg.onclick = () => showImagePopup(imageUrl);
+    }
+  }
+
+  console.log(`[updateSceneCardImage] Updated scene ${sceneId} with image ${imageUrl}`);
 }
 
 // v1.5.3: Update shot card with rendered image

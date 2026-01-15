@@ -1,8 +1,13 @@
 # Changelog
 
-## v1.7.1 (2026-01-14) - UI POLISH & DIRECTOR LOGGING
+## v1.7.1 (2026-01-15) - PREVIEW MODULE BUGFIX
 
 ### Fixed
+- **Preview Module Export**: Fixed 500 errors and video export failures in Preview module
+  - Image path resolution: Use only new project folder structure, removed legacy path support
+  - FFmpeg debugging: Enhanced error logging with detailed command and file path information
+  - Clip caching: Temp folder preserved for reuse, dramatically faster subsequent exports
+  - Concat reliability: Fixed input file errors with proper encoding and path validation
 - **Cost tracking persistence**: All render endpoints now persist costs to project JSON (Bug #1 - Critical Fix)
   - Scene renders (decor, decor_alt, wardrobe preview)
   - Shot renders (both t2i and i2i paths)
@@ -17,6 +22,8 @@
 - **Image popup z-index**: Now appears above scene popup (z-index 2100 vs 2000)
 
 ### UI Improvements
+- **Preview Module**: Simplified interface with fade transitions removed, only resolution selector
+- **Version**: Updated UI title to v1.7.1
 - **Timeline icons**: Wardrobe and decor-lock indicators moved to bottom-right with yellow accent
 - **Queue status**: Added `.timeline-seg-v2.in-queue` styling (dashed yellow border)
 - **Render states**: Added timeline support for rendering/done/error states with animations

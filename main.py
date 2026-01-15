@@ -2372,7 +2372,6 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         raise HTTPException(400, "Audio file not found")
     
     # Settings
-    fade_duration = float(payload.get("fade_duration", 0.5))
     fps = int(payload.get("fps", 30))
     resolution = payload.get("resolution", "1920x1080")
     
@@ -2398,21 +2397,21 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         
         for i, shot in enumerate(rendered_shots):
             img_url = shot["render"]["image_url"]
-            # v1.5.9.1: Handle both legacy and new folder structures
+            # v1.7.1: Use ONLY new project folder structure
             if img_url.startswith("/renders/"):
                 rel_path = img_url[9:]  # Strip /renders/
-                if rel_path.startswith("projects/"):
-                    img_path = DATA / rel_path
-                else:
-                    img_path = RENDERS_DIR / rel_path
+                img_path = DATA / rel_path
             else:
-                img_path = Path(img_url)
+                # Handle absolute paths or relative paths
+                img_path = Path(img_url) if Path(img_url).is_absolute() else DATA / img_url
             
             if not img_path.exists():
-                print(f"[WARN] Shot {shot.get('shot_id')} image not found: {img_path}")
+                print(f"[ERROR] Shot {shot.get('shot_id')} image not found: {img_path}")
+                print(f"[DEBUG] Original URL: {img_url}")
+                print(f"[DEBUG] Resolved path: {img_path}")
                 skipped.append(shot.get('shot_id', f'idx_{i}'))
                 continue
-            
+
             duration = float(shot.get("end", 0)) - float(shot.get("start", 0))
             if duration <= 0:
                 print(f"[WARN] Shot {shot.get('shot_id')} has invalid duration: {duration}")
@@ -2420,6 +2419,18 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
                 continue
             
             clip_path = temp_dir / f"clip_{i:03d}.mp4"
+            
+            # Check if clip already exists - reuse if possible
+            if clip_path.exists():
+                print(f"[INFO] Reusing existing clip {i+1}/{total_shots}: {shot.get('shot_id')} ({duration:.1f}s)")
+                clip_paths.append({
+                    "path": clip_path,
+                    "shot": shot,
+                    "duration": duration,
+                    "seq_id": shot.get("sequence_id", "")
+                })
+                update_export_status(project_id, "processing", i+1, total_shots, f"Reused clip {i+1}/{total_shots}: {shot.get('shot_id')}")
+                continue
             
             # Parse resolution (e.g., "1920x1080" -> width=1920, height=1080)
             res_parts = resolution.split("x")
@@ -2452,7 +2463,7 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
             except subprocess.CalledProcessError as e:
                 print(f"[ERROR] Failed to create clip for {shot.get('shot_id')}: {e.stderr[:200] if e.stderr else str(e)}")
                 skipped.append(shot.get('shot_id', f'idx_{i}'))
-        
+
         print(f"[INFO] Created {len(clip_paths)} clips, skipped {len(skipped)}: {skipped[:5]}{'...' if len(skipped) > 5 else ''}")
         
         if not clip_paths:
@@ -2467,15 +2478,29 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         # Step 2: Use concat demuxer (simpler and more reliable)
         # Create concat file
         concat_file = temp_dir / "concat.txt"
-        with open(concat_file, "w") as f:
+        print(f"[DEBUG] Creating concat file: {concat_file}")
+        with open(concat_file, "w", encoding="utf-8") as f:
             for clip in clip_paths:
-                # FFmpeg concat format requires forward slashes
+                # FFmpeg concat format - use forward slashes and verify file exists
+                if not clip["path"].exists():
+                    print(f"[ERROR] Clip file missing: {clip['path']}")
+                    continue
                 clip_path_str = str(clip["path"]).replace("\\", "/")
                 f.write(f"file '{clip_path_str}'\n")
+                print(f"[DEBUG] Added to concat: {clip_path_str}")
+        
+        # Verify concat file was created and has content
+        if not concat_file.exists():
+            raise HTTPException(500, "Failed to create concat file")
+        
+        with open(concat_file, "r", encoding="utf-8") as f:
+            concat_content = f.read()
+            print(f"[DEBUG] Concat file content ({len(concat_content)} chars):")
+            print(concat_content[:500] + "..." if len(concat_content) > 500 else concat_content)
         
         print(f"[INFO] Concat file created with {len(clip_paths)} entries")
         
-        # Step 3: Concat all clips and add audio
+        # Step 3: Concatenate clips with audio
         final_cmd = [
             "ffmpeg", "-y",
             "-f", "concat",
@@ -2494,20 +2519,31 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         ]
         
         print(f"[INFO] Running final export...")
-        print(f"[DEBUG] FFmpeg cmd: {' '.join(final_cmd[:10])}...")
-        print(f"[DEBUG] Concat file: {concat_file}")
-        print(f"[DEBUG] Audio path: {audio_path}")
-        print(f"[DEBUG] Output path: {output_path}")
+        print(f"[DEBUG] FFmpeg full command:")
+        for i, arg in enumerate(final_cmd):
+            print(f"  [{i}] {arg}")
+        print(f"[DEBUG] Concat file exists: {concat_file.exists()}")
+        print(f"[DEBUG] Audio file exists: {Path(audio_path).exists()}")
+        print(f"[DEBUG] Output dir exists: {output_path.parent.exists()}")
+        print(f"[DEBUG] Working directory: {Path.cwd()}")
         
         result = subprocess.run(final_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
             # Extract actual error from stderr (skip version info)
             stderr_lines = result.stderr.split('\n')
-            error_lines = [l for l in stderr_lines if 'error' in l.lower() or 'invalid' in l.lower() or 'no such' in l.lower()]
+            error_lines = [l for l in stderr_lines if 'error' in l.lower() or 'invalid' in l.lower() or 'no such' in l.lower() or 'failed' in l.lower()]
             error_msg = '\n'.join(error_lines) if error_lines else result.stderr[-500:]
-            print(f"[ERROR] FFmpeg failed: {result.stderr}")
-            raise HTTPException(500, f"FFmpeg export failed: {error_msg}")
+            
+            print(f"[ERROR] FFmpeg command failed:")
+            print(f"[ERROR] Return code: {result.returncode}")
+            print(f"[ERROR] Command: {' '.join(str(x) for x in final_cmd[:15])}...")
+            print(f"[ERROR] Full stderr: {result.stderr}")
+            print(f"[DEBUG] Clips created: {len(clip_paths)}")
+            print(f"[DEBUG] Audio path exists: {Path(audio_path).exists()}")
+            
+            update_export_status(project_id, "error", 0, 0, f"FFmpeg failed: {error_msg[:100]}")
+            raise HTTPException(500, f"Export failed: {error_msg}")
         
         # Calculate scene transitions for info
         scene_transitions = sum(1 for i in range(1, len(clip_paths)) if clip_paths[i-1]["seq_id"] != clip_paths[i]["seq_id"])
@@ -2515,20 +2551,10 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         # Calculate total duration
         total_duration = sum(c["duration"] for c in clip_paths)
         
-        # Cleanup temp files
-        for clip in clip_paths:
-            try:
-                clip["path"].unlink()
-            except:
-                pass
-        try:
-            concat_file.unlink()
-        except:
-            pass
-        try:
-            temp_dir.rmdir()
-        except:
-            pass
+        # Keep temp files for reuse - don't cleanup
+        print(f"[INFO] Temp files kept in: {temp_dir}")
+        print(f"[INFO] Clips: {len(clip_paths)} files")
+        print(f"[INFO] Concat file: {concat_file}")
         
         # Return video URL
         # v1.5.9.1: Return path relative to DATA for serve_render

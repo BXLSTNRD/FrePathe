@@ -3016,16 +3016,17 @@ async function exportVideo() {
       return;
     }
     
-    // Check if shots are rendered
+    // Check if shots are rendered - use LOCAL PROJECT_STATE only
     const shots = PROJECT_STATE?.storyboard?.shots || [];
     const renderedShots = shots.filter(s => s.render?.image_url);
     
     if (renderedShots.length === 0) {
-      showError("No rendered shots. Render shots first.");
+      showError("No rendered shots found. Complete storyboard rendering first.");
       return;
     }
     
-    const fadeDuration = document.getElementById("fadeDuration").value;
+    console.log(`[Preview] Found ${renderedShots.length} rendered shots for export`);
+    
     const resolution = document.getElementById("videoResolution").value;
     
     setStatus(`Exporting ${renderedShots.length} shots…`, null, "previewStatus");
@@ -3049,7 +3050,6 @@ async function exportVideo() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          fade_duration: parseFloat(fadeDuration),
           resolution: resolution,
           fps: 30
         })
@@ -3081,11 +3081,25 @@ async function exportVideo() {
       }
     } catch (e) {
       clearInterval(pollInterval);
+      console.error("[Preview] Export error:", e);
       throw e;
     }
   } catch (e) {
-    showError(e.message);
-    document.getElementById("videoResult").innerHTML = `<span style="color: #ef4444;">Export failed: ${e.message}</span>`;
+    console.error("[Preview] Export failed:", e);
+    showError(`Preview export failed: ${e.message}`);
+    
+    // Show detailed error in videoResult
+    const errorDetail = e.message.includes("500") ? 
+      "Server error during video processing. Check console for details." : 
+      e.message;
+    
+    document.getElementById("videoResult").innerHTML = `
+      <div style="color: #ef4444; padding: 12px; background: rgba(239,68,68,0.1); border-radius: 4px;">
+        <strong>Export Failed:</strong> ${errorDetail}
+        <br><small>Resolution: ${document.getElementById("videoResolution").value}</small>
+      </div>
+    `;
+    setStatus("Export failed", 0, "previewStatus");
   }
 }
 

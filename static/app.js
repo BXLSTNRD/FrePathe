@@ -1151,13 +1151,10 @@ async function updateCastRefImage(castId, refType, input) {
     const fd = new FormData();
     fd.append("file", f);
     
-    const result = await apiCall(`/api/project/${pid()}/cast/${castId}/ref/${refType}`, { method: "POST", body: fd });
+    await apiCall(`/api/project/${pid()}/cast/${castId}/ref/${refType}`, { method: "POST", body: fd });
     
     setStatus(`Ref ${refType.toUpperCase()} updated`, 100, "castStatus");
-    // v1.7.2: Use refs from response, no extra API call needed
-    if (result?.refs) {
-      updateCastCardRefs(castId, result.refs);
-    }
+    await refreshFromServer();
   } catch (e) {
     showError(e.message);
   }
@@ -1199,7 +1196,7 @@ async function createCastRefs(castId) {
     const result = await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
     setStatus("Refs created", 100, "castStatus");
     
-    // v1.7.2: Use refs from response, no extra API call needed
+    // v1.7.2: Use refs from response instead of fetching full state
     if (result?.refs) {
       updateCastCardRefs(castId, result.refs);
     }
@@ -1286,13 +1283,13 @@ async function updateCastPrompt(castId, promptExtra) {
 async function rerenderSingleRef(castId, refType) {
   try {
     setStatus(`Regenerating ref ${refType.toUpperCase()}…`, null, "castStatus");
-    const result = await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/${refType}`, { method: "POST" });
+    await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/${refType}`, { method: "POST" });
     setStatus(`Ref ${refType.toUpperCase()} regenerated`, 100, "castStatus");
     
-    // v1.7.2: Use refs from response, no extra API call needed
-    if (result?.refs) {
-      updateCastCardRefs(castId, result.refs);
-    }
+    // v1.7.0: Update only this cast card, not entire list
+    const freshState = await apiCall(`/api/project/${pid()}`);
+    PROJECT_STATE = freshState;
+    updateCastCardRefs(castId, freshState);
   } catch (e) {
     showError(e.message);
   }
@@ -1308,13 +1305,13 @@ async function rerenderCastWithPrompt(castId) {
   try {
     PENDING_CAST_REFS.add(castId);
     setStatus("Regenerating with extra prompt…", null, "castStatus");
-    const result = await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
+    await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
     setStatus("References regenerated", 100, "castStatus");
     
-    // v1.7.2: Use refs from response, no extra API call needed
-    if (result?.refs) {
-      updateCastCardRefs(castId, result.refs);
-    }
+    // v1.7.0: Update only this cast card, not entire list
+    const freshState = await apiCall(`/api/project/${pid()}`);
+    PROJECT_STATE = freshState;
+    updateCastCardRefs(castId, freshState);
   } catch (e) {
     showError(e.message);
   } finally {
@@ -2625,10 +2622,9 @@ async function renderItemAsync(item) {
       PENDING_CAST_REFS.add(item.id);
       try {
         const result = await apiCall(`/api/project/${pid()}/cast/${item.id}/canonical_refs`, { method: "POST" });
-        // v1.7.2: Use refs from response, no extra API call needed
+        // v1.7.2: Use refs from response instead of fetching full state
         if (result?.refs) {
           updateCastCardRefs(item.id, result.refs);
-        }
       } finally {
         PENDING_CAST_REFS.delete(item.id);
       }
@@ -2641,27 +2637,26 @@ async function renderItemAsync(item) {
 }
 
 // v1.7.0: Update cast card with new refs without re-rendering entire list
-// v1.7.2: Accept optional refs parameter from API response for efficiency
-function updateCastCardRefs(castId, stateOrRefs) {
+// v1.7.2: Accepts either refs object directly or full state
+function updateCastCardRefs(castId, refsOrState) {
   const card = document.querySelector(`.cast-card[data-cast-id="${castId}"]`);
   if (!card) {
     console.warn(`[updateCastCardRefs] Card not found for ${castId}`);
     return;
   }
   
-  // v1.7.2: Check if we got refs directly from API response
-  let refs;
-  if (stateOrRefs?.ref_a || stateOrRefs?.ref_b) {
-    // Direct refs object from API
-    refs = stateOrRefs;
+  // v1.7.2: Support both direct refs object and full state
+  let refs, isLocked;
+  if (refsOrState?.ref_a || refsOrState?.ref_b) {
+    // Direct refs object from API response
+    refs = refsOrState;
+    isLocked = PROJECT_STATE?.project?.cast_locked || false;
   } else {
-    // State object, extract refs from cast_matrix
-    const charRefs = stateOrRefs?.cast_matrix?.character_refs || {};
+    // Full state object (legacy path)
+    const charRefs = refsOrState?.cast_matrix?.character_refs || {};
     refs = charRefs[castId] || {};
+    isLocked = refsOrState?.project?.cast_locked || false;
   }
-  
-  const isLocked = PROJECT_STATE?.project?.cast_locked || false;
-  const isLocked = state?.project?.cast_locked || false;
   
   // Update ref_a thumbnail with click handler
   const refAContainer = card.querySelector('.cast-ref-a');

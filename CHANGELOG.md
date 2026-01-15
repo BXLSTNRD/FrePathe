@@ -22,14 +22,6 @@
   - `editSceneWithPrompt()`: 1 API call instead of 2 (50% reduction)
   - `renderItemAsync(scene)`: 1 API call instead of 2 (50% reduction)
   - Matches efficiency of Shot renders (v1.5.3 pattern)
-- **Cast renders**: Removed unnecessary `GET /api/project/{id}` calls after ref generation
-  - All cast endpoints now return `refs` object directly in response
-  - `createCastRefs()`: 1 API call instead of 2 (50% reduction)
-  - `rerenderSingleRef()`: 1 API call instead of 2 (50% reduction)
-  - `rerenderCastWithPrompt()`: 1 API call instead of 2 (50% reduction)
-  - `updateCastRefImage()`: 1 API call instead of 2 (50% reduction)
-  - `renderItemAsync(cast)`: 1 API call instead of 2 (50% reduction)
-  - All three card types (Cast, Scene, Shot) now equally efficient
 
 ### Technical
 - Enhanced `cacheBust()` function with intelligent path resolution

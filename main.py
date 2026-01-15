@@ -820,12 +820,12 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
         save_project(fresh_state)
 
     return {
-        "cast_id": cast_id,
-        "editor": editor,
-        "ref_a": ref_a,
-        "ref_b": ref_b,
+        "cast_id": cast_id, 
+        "editor": editor, 
+        "ref_a": ref_a, 
+        "ref_b": ref_b, 
         "style_locked": fresh_state["project"].get("style_locked", False),
-        "refs": {"ref_a": ref_a, "ref_b": ref_b}  # v1.7.2: Direct refs for frontend efficiency
+        "refs": {"ref_a": ref_a, "ref_b": ref_b}
     }
 
 @app.post("/api/project/{project_id}/cast/{cast_id}/rerender/{ref_type}")
@@ -883,14 +883,7 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
 
         save_project(fresh_state)
 
-    # v1.7.2: Return both refs for frontend efficiency
-    char_refs = fresh_state.get("cast_matrix", {}).get("character_refs", {}).get(cast_id, {})
-    return {
-        "cast_id": cast_id,
-        "ref_type": ref_type,
-        "url": local_path,
-        "refs": {"ref_a": char_refs.get("ref_a"), "ref_b": char_refs.get("ref_b")}  # v1.7.2: Full refs for update
-    }   
+    return {"cast_id": cast_id, "ref_type": ref_type, "url": local_path}   
 
 # v1.5.3: Upload ref image directly from file
 @app.post("/api/project/{project_id}/cast/{cast_id}/ref/{ref_type}")
@@ -927,13 +920,7 @@ async def api_cast_upload_ref(project_id: str, cast_id: str, ref_type: str, file
     char_refs[f"ref_{ref_type}"] = local_url
     save_project(state)
     
-    # v1.7.2: Return both refs for frontend efficiency
-    return {
-        "cast_id": cast_id,
-        "ref_type": ref_type,
-        "url": local_url,
-        "refs": {"ref_a": char_refs.get("ref_a"), "ref_b": char_refs.get("ref_b")}  # v1.7.2: Full refs for update
-    }
+    return {"cast_id": cast_id, "ref_type": ref_type, "url": local_url}
 
 @app.post("/api/project/{project_id}/castmatrix/scenes/autogen")
 def api_castmatrix_autogen_scenes(project_id: str, payload: Dict[str,Any]):

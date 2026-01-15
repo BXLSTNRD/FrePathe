@@ -29,13 +29,28 @@
 
 ### Bug Fixes
 - **Cast cards visibility**: Fixed empty cast slots not rendering on new project load
+  - New projects now correctly display 3 empty cast slots (LEAD, SUPPORT, EXTRA)
+  - Cast entries without `reference_images` are treated as empty slots with upload UI
 - **Syntax errors**: Fixed try-catch-finally structure in cast rendering queue
+  - Removed duplicate `PENDING_CAST_REFS.delete()` calls
+  - Proper error propagation in cast ref generation
+
+### Backend Changes
+- `/api/project/{id}/cast/{cast_id}/canonical_refs` endpoint now returns `refs` object in response
+  - Includes `{ref_a, ref_b}` directly in result
+  - Frontend no longer needs separate state fetch to get generated refs
+  - Matches pattern used by Scene and Shot render endpoints
 
 ### Technical
 - Enhanced `cacheBust()` function with intelligent path resolution
-- Timeline segment updates preserve wardrobe/lock indicators
+  - External URLs: add cache bust timestamp
+  - Local paths `/renders/`: use as-is
+  - Filenames: construct local path `/renders/projects/{id}/renders/{filename}`
+  - Automatic fallback chain for missing local files
+- Timeline segment updates preserve wardrobe/lock indicators during scene refresh
 - Scene popup auto-updates without explicit refresh calls
 - `updateCastCardRefs()` now accepts both direct refs object and full state (backward compatible)
+- Removed redundant try-catch-finally nesting in async render queue
 
 ---
 

@@ -1,5 +1,42 @@
 # Changelog
 
+## v1.7.4 (2026-01-15) - UI REFINEMENTS & PIPELINE INTEGRATION
+
+### UI Improvements
+- **Pipeline integration**: Merged pipeline bar into PROJECT module header
+  - Removed standalone pipeline navigation bar
+  - Pipeline now serves as PROJECT module title/header
+  - Status and cost displays integrated on right side
+  - Removed border between pipeline and project content
+  - Perfect alignment with module content (left and right edges)
+  
+- **Typography consistency**: Unified pipeline steps with module headers
+  - Font-size: 0.85rem (matching other headers)
+  - Text-transform: uppercase
+  - Letter-spacing: 1.5px
+  - Removed individual step padding for flush alignment
+
+- **Audio Expert field**: Converted from checkbox to dropdown
+  - Changed to On/Off select dropdown
+  - Consistent styling with other project fields
+  
+- **Version badge**: Moved to right side of header
+  - Bottom-aligned with logo
+  - Better visual balance
+
+- **Footer**: Added page footer
+  - Centered "© 2026 - BXLSTNRD"
+  - Fré-geel color (#f5b712)
+  - Consistent typography with field labels
+
+### Technical Changes
+- Removed duplicate border and padding from `.pipeline-nav`
+- Updated cost value styling (removed background/border)
+- Reduced `.pipeline-right` gap from 12px to 8px
+- Removed empty `projectStatus` span from pipeline
+
+---
+
 ## v1.7.3 (2026-01-15) - MULTI-SCENE SELECTION & UI ALIGNMENT
 
 ### UI Improvements

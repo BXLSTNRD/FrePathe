@@ -55,7 +55,7 @@ body {
   color: #9a8530;
   font-size: 0.65rem;
   line-height: 1;
-  margin-bottom: 0px;  /* v1.5.4: align with logo baseline */
+  align-self: flex-end;
 }
 
 /* Patch 1: Large icon buttons next to dropdown */
@@ -68,8 +68,8 @@ body {
 /* v1.5.6: Field groups */
 .field-group {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: column-reverse;
+  gap: 6px;
 }
 
 .field-group .field-label {
@@ -170,10 +170,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
   margin-bottom: 16px;
 }
 
@@ -187,7 +186,7 @@ body {
 .pipeline-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -221,18 +220,19 @@ body {
   font-size: 12px;
   font-weight: 600;
   color: var(--success);
-  padding: 4px 10px;
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
+  padding: 0;
+  background: transparent;
+  border: none;
   border-radius: 4px;
 }
 
 .pipeline-step {
-  padding: 5px 12px;
+  padding: 0;
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 0.85rem;
   font-weight: 600;
-  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
   white-space: nowrap;
   color: var(--text-muted);
 }
@@ -2439,4 +2439,14 @@ button.tiny {
 
 .stop-btn.hidden {
   display: none;
+}
+
+.page-footer {
+  text-align: center;
+  padding: 32px 0 16px 0;
+  margin-top: 32px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #f5b712;
 }

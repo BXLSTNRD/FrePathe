@@ -28,34 +28,56 @@ let PENDING_CAST_REFS = new Set();  // Set of cast_ids currently generating refs
 // ========= Utility =========
 function pid() { return document.getElementById("projectId").value.trim(); }
 
+// v1.7.2: Image cache to prevent reloading local files
+const IMAGE_CACHE = new Map();
+
 // v1.6.5: Cache-busting for images - prevents browser from showing stale renders
 // v1.7.1: Local-first strategy - prefer local project renders, fallback to URL
+// v1.7.2: Only cache-bust external URLs, not local files
 function cacheBust(url) {
   if (!url) return url;
   
-  // If URL is external (https://), use as-is with cache bust
+  // Check if we have cached version
+  if (IMAGE_CACHE.has(url)) {
+    return IMAGE_CACHE.get(url);
+  }
+  
+  let finalUrl;
+  
+  // If URL is external (https://), use with cache bust
   if (url.startsWith('http://') || url.startsWith('https://')) {
     const sep = url.includes('?') ? '&' : '?';
-    return `${url}${sep}t=${Date.now()}`;
+    finalUrl = `${url}${sep}t=${Date.now()}`;
   }
-  
-  // If URL is already /renders/ path, use as-is (already local)
-  if (url.startsWith('/renders/')) {
-    return url;
+  // If URL is already /renders/ path, use as-is (already local - NO cache bust)
+  else if (url.startsWith('/renders/')) {
+    finalUrl = url;
   }
-  
   // Otherwise assume it's a filename and try local first
-  // Format: /renders/projects/{project_id}/renders/{filename}
-  const projectId = pid();
-  if (projectId && !url.includes('projects/')) {
-    // Extract just the filename
-    const filename = url.split('/').pop().split('?')[0];
-    return `/renders/projects/${projectId}/renders/${filename}`;
+  else {
+    // Format: /renders/projects/{project_id}/renders/{filename}
+    const projectId = pid();
+    if (projectId && !url.includes('projects/')) {
+      // Extract just the filename
+      const filename = url.split('/').pop().split('?')[0];
+      finalUrl = `/renders/projects/${projectId}/renders/${filename}`;
+    } else {
+      // Fallback: use as-is for local files, cache-bust for others
+      if (url.startsWith('/')) {
+        finalUrl = url; // Local path, no cache bust
+      } else {
+        const sep = url.includes('?') ? '&' : '?';
+        finalUrl = `${url}${sep}t=${Date.now()}`;
+      }
+    }
   }
   
-  // Fallback: add cache bust
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}t=${Date.now()}`;
+  // Cache the result for local files only
+  if (!finalUrl.startsWith('http')) {
+    IMAGE_CACHE.set(url, finalUrl);
+  }
+  
+  return finalUrl;
 }
 
 // v1.5.9: Per-module status system with domain-specific jokes
@@ -1791,7 +1813,7 @@ function renderTimeline(state) {
     const hasWardrobe = scene?.wardrobe?.trim();
     
     return `
-      <div class="timeline-seg-v2 ${selected} ${inQueue ? 'in-queue' : ''}" onclick="selectSequence('${seq.sequence_id}', event)" data-scene-id="${scene?.scene_id || ''}">
+      <div class="timeline-seg-v2 ${selected} ${inQueue ? 'in-queue' : ''}" onclick="selectSequence('${seq.sequence_id}', event)" data-scene-id="${scene?.scene_id || ''}" data-sequence-id="${seq.sequence_id}">
         <div class="timeline-seg-thumb" onclick="event.stopPropagation(); ${thumb ? `showScenePopup('${scene?.scene_id}')` : ''}">
           ${thumb
             ? `<img src="${cacheBust(thumb)}"/>`
@@ -1823,7 +1845,15 @@ function selectSequence(seqId, event) {
     // Normale click: enkelvoudige selectie
     SELECTED_SEQUENCE_IDS = [seqId];
   }
-  renderTimeline(PROJECT_STATE);
+  
+  // v1.7.2: Optimized selection - only update classes instead of full re-render
+  document.querySelectorAll('.timeline-seg-v2').forEach(seg => {
+    const segSeqId = seg.getAttribute('data-sequence-id');
+    if (segSeqId) {
+      seg.classList.toggle('selected', SELECTED_SEQUENCE_IDS.includes(segSeqId));
+    }
+  });
+  
   renderShots(PROJECT_STATE);
   updateButtonStates();
 }
@@ -1851,7 +1881,11 @@ function showScenePopup(sceneId) {
   const img = document.getElementById("scenePopupImage");
   if (img) {
     if (thumb) {
-      img.src = cacheBust(thumb);
+      // v1.7.2: Only update src if changed to prevent reload
+      const newSrc = cacheBust(thumb);
+      if (img.src !== newSrc && !img.src.endsWith(newSrc)) {
+        img.src = newSrc;
+      }
       img.style.display = "block";
       img.onclick = () => showImagePopup(thumb);
     } else {
@@ -1896,7 +1930,11 @@ function showScenePopup(sceneId) {
   const altImg = document.getElementById("scenePopupImageAltImg");
   if (altImg) {
     if (thumbAlt) {
-      altImg.src = cacheBust(thumbAlt);
+      // v1.7.2: Only update src if changed
+      const newSrc = cacheBust(thumbAlt);
+      if (altImg.src !== newSrc && !altImg.src.endsWith(newSrc)) {
+        altImg.src = newSrc;
+      }
       altImg.style.display = "block";
       altImg.onclick = () => showImagePopup(thumbAlt);
     } else {
@@ -1928,7 +1966,11 @@ function showScenePopup(sceneId) {
 
   if (wardrobeImg && wardrobeEmpty) {
     if (wardrobeRef) {
-      wardrobeImg.src = cacheBust(wardrobeRef);
+      // v1.7.2: Only update src if changed
+      const newSrc = cacheBust(wardrobeRef);
+      if (wardrobeImg.src !== newSrc && !wardrobeImg.src.endsWith(newSrc)) {
+        wardrobeImg.src = newSrc;
+      }
       wardrobeImg.style.display = "block";
       wardrobeImg.onclick = () => showImagePopup(wardrobeRef);
       wardrobeEmpty.style.display = "none";

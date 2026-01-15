@@ -17,6 +17,7 @@ from .config import (
     VERSION,
     PATH_MANAGER,
     BASE,
+    DATA,
     now_iso,
     locked_render_models
 )

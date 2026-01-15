@@ -2627,7 +2627,6 @@ async function renderItemAsync(item) {
           updateCastCardRefs(item.id, result.refs);
         }
       } catch (castErr) {
-        PENDING_CAST_REFS.delete(item.id);
         throw castErr;
       } finally {
         PENDING_CAST_REFS.delete(item.id);

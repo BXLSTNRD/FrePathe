@@ -2625,6 +2625,10 @@ async function renderItemAsync(item) {
         // v1.7.2: Use refs from response instead of fetching full state
         if (result?.refs) {
           updateCastCardRefs(item.id, result.refs);
+        }
+      } catch (castErr) {
+        PENDING_CAST_REFS.delete(item.id);
+        throw castErr;
       } finally {
         PENDING_CAST_REFS.delete(item.id);
       }

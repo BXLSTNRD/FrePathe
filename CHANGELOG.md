@@ -22,11 +22,20 @@
   - `editSceneWithPrompt()`: 1 API call instead of 2 (50% reduction)
   - `renderItemAsync(scene)`: 1 API call instead of 2 (50% reduction)
   - Matches efficiency of Shot renders (v1.5.3 pattern)
+- **Cast ref generation**: Backend now returns refs in response
+  - `createCastRefs()`: 1 API call instead of 2 (50% reduction)
+  - `renderItemAsync(cast)`: 1 API call instead of 2 (50% reduction)
+  - Eliminates redundant state fetch after ref generation
+
+### Bug Fixes
+- **Cast cards visibility**: Fixed empty cast slots not rendering on new project load
+- **Syntax errors**: Fixed try-catch-finally structure in cast rendering queue
 
 ### Technical
 - Enhanced `cacheBust()` function with intelligent path resolution
 - Timeline segment updates preserve wardrobe/lock indicators
 - Scene popup auto-updates without explicit refresh calls
+- `updateCastCardRefs()` now accepts both direct refs object and full state (backward compatible)
 
 ---
 

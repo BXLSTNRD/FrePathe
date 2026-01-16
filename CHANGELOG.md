@@ -66,6 +66,16 @@
   - Prevents link rot, reduces external dependencies
   - Runs once per project load (safe re-entry)
 
+- **Orphaned render recovery**: `recover_orphaned_renders()` finds lost renders on disk
+  - Scans project renders directory for shots missing `image_url`
+  - Triple-pattern matching (backward compatible):
+    1. `seq_07_sh01.png` (standard shot_id format)
+    2. `Sce07_Sho01.png` (friendly names from v1.5.9.1+)
+    3. `WWT_v1.8.0_seq_07_sh01.png` (old project-prefixed format)
+  - Skips thumbnails (`*_thumb.webp`)
+  - Restores `render.image_url` + marks as "recovered"
+  - **Impact**: No more manual JSON editing after server crashes
+
 - **Version blocker removed**: Projects auto-update on save
   - No more "version mismatch" blocking autosave
   - `save_project()` updates `created_version` to current

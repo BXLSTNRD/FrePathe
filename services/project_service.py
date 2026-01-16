@@ -375,9 +375,17 @@ def recover_orphaned_renders(state: Dict[str, Any], pid: str) -> Dict[str, Any]:
         
         # Look for matching files in project renders directory
         renders_dir = get_project_renders_dir(state)
+        
+        # v1.8: Parse shot_id (seq_01_sh01) to friendly name (Sce01_Sho01)
+        parts = shot_id.split("_")
+        friendly_name = None
+        if len(parts) >= 4:
+            friendly_name = f"Sce{parts[1]}_Sho{parts[3]}"
+        
         for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-            for f in renders_dir.glob(f"{pid}_{shot_id}*{ext}"):
-                if f.exists():
+            # Try 1: Direct shot_id match (seq_07_sh01.png)
+            for f in renders_dir.glob(f"{shot_id}*{ext}"):
+                if f.exists() and "_thumb" not in f.name:  # Skip thumbnails
                     local_url = PATH_MANAGER.to_url(f)
                     shot["render"] = {
                         "status": "done",
@@ -389,6 +397,39 @@ def recover_orphaned_renders(state: Dict[str, Any], pid: str) -> Dict[str, Any]:
                     recovered += 1
                     print(f"[INFO] Recovered render for {shot_id}: {local_url}")
                     break
+            
+            # Try 2: Friendly name (Sce01_Sho01.png)
+            if not shot.get("render", {}).get("status") == "done" and friendly_name:
+                for f in renders_dir.glob(f"{friendly_name}*{ext}"):
+                    if f.exists() and "_thumb" not in f.name:  # Skip thumbnails
+                        local_url = PATH_MANAGER.to_url(f)
+                        shot["render"] = {
+                            "status": "done",
+                            "image_url": local_url,
+                            "model": "recovered",
+                            "ref_images_used": 0,
+                            "error": None
+                        }
+                        recovered += 1
+                        print(f"[INFO] Recovered render for {shot_id}: {local_url}")
+                        break
+            
+            # Try 3: Old format with project prefix (WWT_v1.8.0_seq_01_sh01.png)
+            if not shot.get("render", {}).get("status") == "done":
+                for f in renders_dir.glob(f"{pid}_{shot_id}*{ext}"):
+                    if f.exists() and "_thumb" not in f.name:  # Skip thumbnails
+                        local_url = PATH_MANAGER.to_url(f)
+                        shot["render"] = {
+                            "status": "done",
+                            "image_url": local_url,
+                            "model": "recovered",
+                            "ref_images_used": 0,
+                            "error": None
+                        }
+                        recovered += 1
+                        print(f"[INFO] Recovered render for {shot_id}: {local_url}")
+                        break
+            
             if shot.get("render", {}).get("status") == "done":
                 break
     

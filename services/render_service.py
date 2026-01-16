@@ -5,6 +5,7 @@ Handles image generation (txt2img, img2img), FAL API calls, and render managemen
 import requests
 import json
 import time
+import fal_client
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -145,7 +146,11 @@ def call_txt2img(
         }
     
     def do_request():
-        r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        try:
+            r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(502, f"txt2img network error: {type(e).__name__}: {str(e)[:200]}")
+        
         if r.status_code >= 500:
             raise HTTPException(502, f"txt2img failed: {r.status_code} {r.text[:500]}")
         elif r.status_code >= 400:
@@ -177,18 +182,35 @@ def call_img2img_editor(
     prompt: str, 
     image_urls: List[str], 
     aspect: str,
-    project_id: str = "unknown"
+    project_id: str = "unknown",
+    state: Optional[Dict[str, Any]] = None
 ) -> str:
     """
     Generate image from reference images + prompt using FAL img2img.
     Returns the first output image URL or raises HTTPException.
     
     editor_key: flux2_edit | nanobanana_edit | seedream45_edit
+    state: Optional project state for upload caching
     """
     require_key("FAL_KEY", FAL_KEY)
 
     if not image_urls:
         raise HTTPException(400, "img2img requires at least 1 image_url")
+    
+    # Upload local refs to FAL (convert /files/ paths to fal.media URLs)
+    # Uses state cache to avoid re-uploading same refs
+    uploaded_refs = []
+    for ref_url in image_urls:
+        try:
+            uploaded = upload_local_ref_to_fal(ref_url, state=state)
+            uploaded_refs.append(uploaded)
+        except Exception as e:
+            print(f"[WARN] Skipping ref {ref_url}: upload failed: {e}")
+    
+    if not uploaded_refs:
+        raise HTTPException(400, "All ref images failed to upload")
+    
+    image_urls = uploaded_refs  # Use uploaded URLs
 
     # Build aspect ratio parameters
     aspect_ratio = "16:9" if aspect == "horizontal" else ("9:16" if aspect == "vertical" else "1:1")
@@ -233,7 +255,11 @@ def call_img2img_editor(
         raise HTTPException(400, f"Unknown img2img_editor: {editor_key}")
 
     def do_request():
-        r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        try:
+            r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(502, f"img2img network error: {type(e).__name__}: {str(e)[:200]}")
+        
         if r.status_code >= 500:
             raise HTTPException(502, f"img2img editor failed: {r.status_code} {r.text[:500]}")
         elif r.status_code >= 400:
@@ -321,6 +347,108 @@ def build_shot_prompt(
     return prompt
 
 
+def upload_local_ref_to_fal(url: str, state: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Upload local /files/ URL to FAL if needed. Returns FAL URL or original.
+    Uses persistent cache in project state (survives reloads).
+    Cache is stored in project.fal_upload_cache for persistence.
+    """
+    if not url:
+        return url
+    
+    # Already a FAL URL or external URL
+    if "fal.media" in url or (url.startswith("http") and not url.startswith("/files/")):
+        return url
+    
+    # Check persistent cache first (survives project reloads)
+    if state:
+        cache = state.get("project", {}).get("fal_upload_cache", {})
+        if url in cache:
+            cached_fal_url = cache[url]
+            # Verify cached URL still works (FAL URLs expire after ~24h)
+            try:
+                test = requests.head(cached_fal_url, timeout=5)
+                if test.status_code < 400:
+                    print(f"[CACHE] Using cached FAL URL for: {Path(url).name}")
+                    return cached_fal_url
+                else:
+                    print(f"[CACHE] Cached URL expired, re-uploading: {Path(url).name}")
+            except:
+                print(f"[CACHE] Cache validation failed, re-uploading: {Path(url).name}")
+    
+    # Local /files/ path needs upload
+    if url.startswith("/files/"):
+        try:
+            local_path = PATH_MANAGER.from_url(url)
+            if not local_path.exists():
+                print(f"[WARN] Ref image not found: {local_path}")
+                return url
+            
+            print(f"[INFO] Uploading ref to FAL: {local_path.name}")
+            fal_url = fal_client.upload_file(str(local_path))
+            
+            # Cache the result persistently in project state
+            if state:
+                if "fal_upload_cache" not in state["project"]:
+                    state["project"]["fal_upload_cache"] = {}
+                state["project"]["fal_upload_cache"][url] = fal_url
+                # Mark project as modified (will be saved)
+                state["_cache_modified"] = True
+            
+            return fal_url
+        except Exception as e:
+            print(f"[ERROR] FAL upload failed for {url}: {e}")
+            return url  # Return original, let FAL handle the error
+    
+    return url
+
+
+def prewarm_fal_upload_cache(state: Dict[str, Any]) -> int:
+    """
+    Pre-upload ALL cast refs and scene decors to FAL before rendering starts.
+    Returns number of new uploads performed.
+    Call this once at render session start to avoid upload delays per shot.
+    """
+    uploads = 0
+    to_upload = []
+    
+    # Collect all unique ref URLs that need uploading
+    # Note: Style lock excluded - only used for cast ref generation, not shot rendering
+    
+    # 1. All cast refs (ref_a and ref_b)
+    char_refs = state.get("cast_matrix", {}).get("character_refs", {})
+    for cast_id, refs in char_refs.items():
+        for key in ["ref_a", "ref_b"]:
+            ref_url = refs.get(key)
+            if ref_url and ref_url.startswith("/files/") and ref_url not in to_upload:
+                to_upload.append(ref_url)
+    
+    # 3. All scene decors
+    scenes = state.get("cast_matrix", {}).get("scenes", [])
+    for scene in scenes:
+        decor_refs = scene.get("decor_refs", [])
+        for decor in decor_refs:
+            if decor and decor.startswith("/files/") and decor not in to_upload:
+                to_upload.append(decor)
+        
+        # Wardrobe refs
+        wardrobe_ref = scene.get("wardrobe_ref")
+        if wardrobe_ref and wardrobe_ref.startswith("/files/") and wardrobe_ref not in to_upload:
+            to_upload.append(wardrobe_ref)
+    
+    # Upload all
+    if to_upload:
+        print(f"[PREWARM] Pre-uploading {len(to_upload)} refs to FAL...")
+        for ref_url in to_upload:
+            # This will use cache if already uploaded, or upload if new
+            fal_url = upload_local_ref_to_fal(ref_url, state=state)
+            if fal_url != ref_url and "fal.media" in fal_url:
+                uploads += 1
+        print(f"[PREWARM] Complete: {uploads} new uploads, {len(to_upload)-uploads} from cache")
+    
+    return uploads
+
+
 def get_shot_ref_images(
     shot: Dict[str, Any],
     state: Dict[str, Any],
@@ -329,12 +457,9 @@ def get_shot_ref_images(
     """Get all reference images for rendering a shot."""
     refs = []
     
-    # 1. Style lock image (if enabled)
-    style_lock = state.get("project", {}).get("style_lock_image")
-    if style_lock:
-        refs.append(style_lock)
+    # Note: Style lock is NOT included - it's only for cast ref generation
     
-    # 2. Cast refs (ref_a for each cast member)
+    # 1. Cast refs (ref_a for each cast member)
     cast_ids = shot.get("cast", [])
     char_refs = state.get("cast_matrix", {}).get("character_refs", {})
     for cid in cast_ids:
@@ -434,7 +559,11 @@ def call_t2i_with_retry(state: Dict[str, Any], prompt: str, image_size: str) -> 
     endpoint, payload, model_name = t2i_endpoint_and_payload(state, prompt, image_size)
     
     def do_request():
-        r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        try:
+            r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(502, f"T2I network error: {type(e).__name__}: {str(e)[:200]}")
+        
         if r.status_code >= 500:
             raise HTTPException(502, f"T2I failed: {r.status_code} {r.text[:500]}")
         elif r.status_code >= 400:

@@ -6,6 +6,7 @@ applyTo: '**'
 KRITIEK: Als user zegt "fix de Preview module bugs", dan doe je ALLEEN Preview module bugs.
 NIET beginnen over andere modules, API calls elders, of "ik zie ook dat...".
 NIET uitbreiden naar gerelateerde functionaliteit tenzij expliciet gevraagd.
+WEL PRECIES NADENKEN Welke invloed een wijziging heeft op latere elementen in het process en de werking ervan INTACT houden....
 
 Focus en scope respecteren is CRUCIAAL.
 Analyse → structureren → uitvoeren binnen gegeven scope.

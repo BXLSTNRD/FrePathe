@@ -1,4 +1,4 @@
-// BXLSTNRD Video Studio v1.6.9
+// BXLSTNRD Video Studio v1.8.0
 
 const DEFAULT_AUDIO_PROMPT = `Analyze this audio and return ONLY a JSON object with this exact structure (no markdown, no prose):
 {
@@ -27,6 +27,22 @@ let PENDING_CAST_REFS = new Set();  // Set of cast_ids currently generating refs
 
 // ========= Utility =========
 function pid() { return document.getElementById("projectId").value.trim(); }
+
+// v1.8.0: Thumbnail support for faster loading
+function getThumbnailUrl(imageUrl) {
+  if (!imageUrl) return imageUrl;
+  return imageUrl.replace(/\.(png|jpg|jpeg)$/i, "_thumb.webp");
+}
+
+function setImageWithFallback(imgElement, imageUrl) {
+  if (!imageUrl) return;
+  const thumbUrl = getThumbnailUrl(imageUrl);
+  imgElement.src = cacheBust(thumbUrl);
+  imgElement.onerror = () => {
+    imgElement.src = cacheBust(imageUrl);
+    imgElement.onerror = null; // Prevent infinite loop
+  };
+}
 
 // v1.7.2: Image cache to prevent reloading local files
 const IMAGE_CACHE = new Map();
@@ -2296,7 +2312,7 @@ function renderShots(state) {
           <div class="shot-card-desc">${desc}</div>
           <div class="shot-render-container">
             ${hasRender
-              ? `<img class="shot-render-img" src="${cacheBust(sh.render.image_url)}" onclick="showImagePopup('${sh.render.image_url}')"/>
+              ? `<img class="shot-render-img" src="${cacheBust(getThumbnailUrl(sh.render.image_url))}" onerror="this.onerror=null; this.src='${cacheBust(sh.render.image_url)}'" onclick="showImagePopup('${sh.render.image_url}')"/>
                  <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${sh.shot_id}')" title="Re-render">↻</button>`
               : inQueue
                 ? `<div class="shot-render-placeholder queue-status">
@@ -2446,7 +2462,7 @@ function openShotRefPicker(shotId) {
   
   const shotsHtml = rendered.map(s => `
     <div class="ref-pick-item" onclick="selectShotRef('${shotId}', '${s.render.image_url}', '${s.shot_id}')">
-      <img src="${cacheBust(s.render.image_url)}"/>
+      <img src="${cacheBust(getThumbnailUrl(s.render.image_url))}" onerror="this.onerror=null; this.src='${cacheBust(s.render.image_url)}'" />
       <div class="ref-pick-label">${s.shot_id.replace(/seq_(\d+)/, 'sc$1')}</div>
     </div>
   `).join("");
@@ -2497,7 +2513,7 @@ function openShotEditor(shotId) {
   const promptInput = document.getElementById("shotEditPrompt");
   const castSelect = document.getElementById("shotEditorCast");
   
-  img.src = cacheBust(shot.render.image_url);
+  setImageWithFallback(img, shot.render.image_url);
   promptInput.value = "";
   
   // Populate cast selector
@@ -2597,6 +2613,18 @@ async function renderAllShots() {
     if (!shotsToRender.length) {
       setStatus("All shots already rendered", 100, "storyboardStatus");
       return;
+    }
+
+    // v1.8.0: Pre-upload all refs to FAL before rendering (massive speedup)
+    setStatus("Pre-uploading refs to FAL...", null, "storyboardStatus");
+    try {
+      const prewarmRes = await fetch(`/api/project/${pid()}/prewarm_fal_cache`, {method: "POST"});
+      if (prewarmRes.ok) {
+        const data = await prewarmRes.json();
+        console.log(`[PREWARM] ${data.new_uploads} new uploads, rest from cache`);
+      }
+    } catch (e) {
+      console.warn("[PREWARM] Failed, continuing anyway:", e);
     }
 
     // v1.6.5: Get negative prompt override if provided

@@ -54,7 +54,7 @@ from services.render_service import (
     resolve_render_path, build_shot_prompt, get_shot_ref_images,
     update_shot_render, get_pending_shots, get_render_stats,
     t2i_endpoint_and_payload, call_t2i_with_retry, energy_tokens, build_prompt,
-    save_fal_debug,
+    save_fal_debug, prewarm_fal_upload_cache,
 )
 from services.storyboard_service import (
     target_sequences_and_shots,
@@ -147,7 +147,7 @@ def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict,
     
     prompt = f"{base_style}, {wardrobe_text}, {decor_prompt}, consistent identity, high quality"
     
-    result_url = call_img2img_editor(editor, prompt, [ref_url], aspect, project_id)
+    result_url = call_img2img_editor(editor, prompt, [ref_url], aspect, project_id, state=state)
     editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     
     # Store as wardrobe_ref
@@ -213,7 +213,11 @@ def serve_file(filepath: str):
         if not full_path.exists():
             raise HTTPException(404, f"File not found: {filepath}")
         
-        return FileResponse(str(full_path), media_type=get_media_type(filepath))
+        return FileResponse(
+            str(full_path), 
+            media_type=get_media_type(filepath),
+            headers={"Cache-Control": "public, max-age=86400"}  # Cache for 1 day
+        )
     
     except HTTPException:
         raise
@@ -535,7 +539,11 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
                 "chunk_level": "segment",
                 "version": "3"
             }
-            whisper_r = requests.post(FAL_WHISPER, headers=fal_headers(), json=whisper_payload, timeout=300)
+            try:
+                whisper_r = requests.post(FAL_WHISPER, headers=fal_headers(), json=whisper_payload, timeout=300)
+            except requests.exceptions.RequestException as e:
+                print(f"[WARN] Whisper network error: {type(e).__name__}: {e}")
+                raise
             
             if whisper_r.status_code < 300:
                 whisper_data = whisper_r.json()
@@ -552,7 +560,13 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
             print(f"[WARN] Whisper error: {e}")
 
     audio_payload = {"audio_url":audio_url, "prompt":prompt}
-    r = requests.post(FAL_AUDIO, headers=fal_headers(), json=audio_payload, timeout=300)
+    try:
+        r = requests.post(FAL_AUDIO, headers=fal_headers(), json=audio_payload, timeout=300)
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Audio understanding network error: {type(e).__name__}: {str(e)[:200]}"
+        print(f"[ERROR] {error_msg}")
+        return JSONResponse({"error": error_msg}, status_code=502)
+    
     # v1.5.1: Track cost based on duration ($0.01 per 5 seconds)
     duration_for_cost = local_duration or 180  # Fallback to 3 min estimate
     audio_cost_units = max(1, int(duration_for_cost / 5))  # 5-second units
@@ -910,9 +924,9 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
     prompt_b = f"{base_style}, {extra_prefix}{style_instruction}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
 
     # v1.7.0: Generate refs and track costs
-    ref_a_url = call_img2img_editor(editor, prompt_a, ref_images, aspect, project_id)
+    ref_a_url = call_img2img_editor(editor, prompt_a, ref_images, aspect, project_id, state=state)
     track_cost(f"fal-ai/{editor}", 1, state=state, note="cast_ref_a")
-    ref_b_url = call_img2img_editor(editor, prompt_b, ref_images, aspect, project_id)
+    ref_b_url = call_img2img_editor(editor, prompt_b, ref_images, aspect, project_id, state=state)
     track_cost(f"fal-ai/{editor}", 1, state=state, note="cast_ref_b")
 
     # v1.6.1: Store locally with friendly names in project folder
@@ -983,7 +997,7 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
     else:
         prompt = f"{base_style}, {extra_prefix}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
 
-    new_url = call_img2img_editor(editor, prompt, [refs[0]], aspect, project_id)
+    new_url = call_img2img_editor(editor, prompt, [refs[0]], aspect, project_id, state=state)
     track_cost(f"fal-ai/{editor}", 1, state=state, note=f"cast_ref_{ref_type}")
     
     # v1.5.9.1: Store with friendly name in project folder
@@ -1365,7 +1379,7 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
     
     # Call img2img
     editor = locked_editor_key(state)
-    result_url = call_img2img_editor(editor, full_prompt, [uploaded_url], aspect, project_id)
+    result_url = call_img2img_editor(editor, full_prompt, [uploaded_url], aspect, project_id, state=state)
     editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     
     # v1.5.9.1: Save locally with friendly name
@@ -1568,7 +1582,7 @@ def api_castmatrix_generate_scene(project_id: str, scene_id: str, payload: Dict[
 
     # decor_2: same room, different viewpoint (img2img off decor_1)
     decor2_prompt = base_prompt + ", same room, different camera angle, different framing, consistent architecture, consistent lighting"
-    decor_2 = call_img2img_editor(editor, decor2_prompt, [decor_refs[0]], aspect, project_id)
+    decor_2 = call_img2img_editor(editor, decor2_prompt, [decor_refs[0]], aspect, project_id, state=state)
     track_cost(f"fal-ai/{editor}", 1, state=state, note="scene_decor_i2i")
     decor_refs.append(decor_2)
 
@@ -2075,6 +2089,28 @@ def api_tighten(project_id: str):
     save_project(state)
     return {"ok": True, "shots_count": len(shots)}
 
+# ========= API: Prewarm FAL Upload Cache =========
+@app.post("/api/project/{project_id}/prewarm_fal_cache")
+def api_prewarm_fal_cache(project_id: str):
+    """
+    v1.8: Pre-upload all cast refs and scene decors to FAL.
+    Call before bulk rendering to avoid per-shot upload delays.
+    """
+    state = load_project(project_id)
+    require_key("FAL_KEY", FAL_KEY)
+    
+    uploads = prewarm_fal_upload_cache(state)
+    
+    # Save cache to persist between reloads
+    if uploads > 0:
+        save_project(state, validate=False)
+    
+    return {
+        "ok": True,
+        "new_uploads": uploads,
+        "message": f"Pre-uploaded {uploads} refs to FAL"
+    }
+
 # ========= API: Render shot =========
 @app.post("/api/project/{project_id}/shot/{shot_id}/render")
 def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = None):
@@ -2244,7 +2280,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
     if ref_images:
         editor = locked_editor_key(state)
         try:
-            img_url = call_img2img_editor(editor, prompt, ref_images, aspect, project_id)
+            img_url = call_img2img_editor(editor, prompt, ref_images, aspect, project_id, state=state)
             model_name = editor
             render_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
         except Exception as e:
@@ -2256,7 +2292,15 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         image_size = "landscape_16_9" if aspect=="horizontal" else ("portrait_16_9" if aspect=="vertical" else "square_hd")
         endpoint, payload, model_name = t2i_endpoint_and_payload(state, prompt, image_size)
         
-        r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        try:
+            r = requests.post(endpoint, headers=fal_headers(), json=payload, timeout=300)
+        except requests.exceptions.RequestException as e:
+            error_msg = f"T2I network error: {type(e).__name__}: {str(e)[:200]}"
+            print(f"[ERROR] {error_msg}")
+            shot["render"] = {"status":"error","image_url":None,"model":model_name,"error":error_msg}
+            save_project(state)
+            return {"error": error_msg}
+        
         render_cost = API_COSTS.get(f"fal-ai/{model_name}", 0.04)
         
         if r.status_code >= 300:
@@ -2401,7 +2445,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     # Call img2img
     editor = locked_editor_key(state)
     try:
-        img_url = call_img2img_editor(editor, full_prompt, ref_images, aspect, project_id)
+        img_url = call_img2img_editor(editor, full_prompt, ref_images, aspect, project_id, state=state)
         editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     except Exception as e:
         raise HTTPException(502, f"Edit failed: {str(e)}")

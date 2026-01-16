@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from fastapi import HTTPException
 from jsonschema import validate, ValidationError
+from PIL import Image
 
 from .config import (
     VERSION,
@@ -21,6 +22,24 @@ from .config import (
     now_iso,
     locked_render_models
 )
+
+
+# ========= Thumbnail Generation =========
+
+def create_thumbnail(image_path: Path, size=(400, 400)):
+    """Maakt een geoptimaliseerde WebP thumbnail voor de UI."""
+    try:
+        thumb_path = image_path.with_name(image_path.stem + "_thumb.webp")
+        if not thumb_path.exists():
+            with Image.open(image_path) as img:
+                # Behoud aspect ratio, maar max 400px
+                img.thumbnail(size, Image.Resampling.LANCZOS)
+                # Sla op als WebP (veel kleiner dan PNG)
+                img.save(thumb_path, "WEBP", quality=80)
+            return thumb_path
+    except Exception as e:
+        print(f"[WARN] Thumbnail generatie mislukt voor {image_path.name}: {e}")
+    return None
 
 
 # ========= Filename Sanitization =========
@@ -134,7 +153,7 @@ def download_image_locally(
     If state provided: saves to project folder with friendly name.
     If no state: legacy behavior (saves to global renders folder).
     """
-    if not url or url.startswith("/renders/"):
+    if not url or url.startswith("/files/") or url.startswith("/renders/"):
         return url
     try:
         ext = ".png"
@@ -153,13 +172,19 @@ def download_image_locally(
             local_path = renders_dir / local_filename
             
             # Download
-            r = requests.get(url, timeout=60)
+            try:
+                r = requests.get(url, timeout=60)
+            except requests.exceptions.RequestException as e:
+                print(f"[WARN] Download failed (network error): {type(e).__name__}: {e}")
+                return url  # Return original URL on network failure
+            
             if r.status_code == 200:
                 local_path.write_bytes(r.content)
+                # Generate thumbnail for faster UI loading
+                create_thumbnail(local_path)
             
-            # Return path relative to DATA for serve_render
-            rel_path = local_path.relative_to(DATA)
-            return f"/renders/{rel_path.as_posix()}"
+            # Use PathManager for consistent URL generation
+            return PATH_MANAGER.to_url(local_path)
         else:
             # Legacy behavior - save to temp dir
             import hashlib
@@ -168,9 +193,16 @@ def download_image_locally(
             local_path = PATH_MANAGER.temp_dir / local_filename
             
             if not local_path.exists():
-                r = requests.get(url, timeout=60)
+                try:
+                    r = requests.get(url, timeout=60)
+                except requests.exceptions.RequestException as e:
+                    print(f"[WARN] Download failed (network error): {type(e).__name__}: {e}")
+                    return url  # Return original URL on network failure
+                
                 if r.status_code == 200:
                     local_path.write_bytes(r.content)
+                    # Generate thumbnail for faster UI loading
+                    create_thumbnail(local_path)
             
             return PATH_MANAGER.to_url(local_path)
     except Exception as e:
@@ -322,6 +354,9 @@ def load_project(pid: str) -> Dict[str, Any]:
     # Recover orphaned render files
     state = recover_orphaned_renders(state, pid)
     
+    # Migrate FAL links to local storage
+    state = migrate_fal_to_local(state)
+    
     return state
 
 
@@ -388,19 +423,50 @@ def recover_orphaned_renders(state: Dict[str, Any], pid: str) -> Dict[str, Any]:
     return state
 
 
+def migrate_fal_to_local(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Scant de state op FAL links en probeert ze lokaal te trekken."""
+    project_id = state["project"]["id"]
+    modified = False
+
+    # 1. Check style_lock_image
+    style_img = state["project"].get("style_lock_image")
+    if style_img and "fal.media" in style_img:
+        state["project"]["style_lock_image"] = download_image_locally(style_img, project_id, "style_lock", state)
+        modified = True
+
+    # 2. Check cast refs
+    for cast_id, refs in state.get("cast_matrix", {}).get("character_refs", {}).items():
+        for key in ["ref_a", "ref_b"]:
+            if refs.get(key) and "fal.media" in refs[key]:
+                refs[key] = download_image_locally(refs[key], project_id, f"cast_{cast_id}_{key}", state)
+                modified = True
+
+    # 3. Check shots
+    for shot in state.get("storyboard", {}).get("shots", []):
+        img_url = shot.get("render", {}).get("image_url")
+        if img_url and "fal.media" in img_url:
+            shot["render"]["image_url"] = download_image_locally(img_url, project_id, shot["shot_id"], state)
+            modified = True
+
+    if modified:
+        print(f"[INFO] Migration completed for {project_id}. Saving local paths.")
+        save_project(state, force=True)  # Forceer de save nu de links lokaal zijn
+    
+    return state
+
+
 def save_project(state: Dict[str, Any], validate: bool = True, force: bool = False) -> None:
     """
     Save project state.
-    Blocks save if version mismatch unless force=True.
+    Auto-migrates version if mismatch detected.
     """
     pid = state["project"]["id"]
     
-    # Version mismatch detection - disable autosave for old projects
-    created_version = state["project"].get("created_version")
-    if created_version and created_version != VERSION and not force:
-        print(f"[WARN] Version mismatch: project created with {created_version}, current app is {VERSION}")
-        print(f"[WARN] Autosave disabled. Use 'force=True' or update project version to save.")
-        return
+    # Version migration - auto-update to current version
+    current_project_version = state["project"].get("created_version")
+    if current_project_version and current_project_version != VERSION:
+        print(f"[MIGRATION] Updating project {pid} from {current_project_version} to {VERSION}")
+        state["project"]["created_version"] = VERSION
     
     state["project"]["updated_at"] = now_iso()
     

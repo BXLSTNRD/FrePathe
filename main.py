@@ -2568,10 +2568,9 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         
         for i, shot in enumerate(rendered_shots):
             img_url = shot["render"]["image_url"]
-            # v1.7.1: Use ONLY new project folder structure
-            if img_url.startswith("/renders/"):
-                rel_path = img_url[9:]  # Strip /renders/
-                img_path = PATH_MANAGER.workspace_root / rel_path
+            # v1.8: Use PATH_MANAGER.from_url() for all /files/ and /renders/ URLs
+            if img_url.startswith("/files/") or img_url.startswith("/renders/"):
+                img_path = PATH_MANAGER.from_url(img_url)
             else:
                 # Handle absolute paths or relative paths
                 img_path = Path(img_url) if Path(img_url).is_absolute() else PATH_MANAGER.workspace_root / img_url

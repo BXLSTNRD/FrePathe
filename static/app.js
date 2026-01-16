@@ -454,7 +454,16 @@ function loadProjectFromFile() {
       
       // v1.5.6: Load video model and whisper settings
       const videoModelEl = document.getElementById("videoModel");
-      if (videoModelEl) videoModelEl.value = state.project.video_model || "none";
+      if (videoModelEl) videoModelEl.value = state.project.video_model || "";
+      
+      // v1.8.0: Save video model on change
+      if (videoModelEl && !videoModelEl.dataset.listenerAdded) {
+        videoModelEl.addEventListener("change", async () => {
+          PROJECT_STATE.project.video_model = videoModelEl.value;
+          await saveProject();
+        });
+        videoModelEl.dataset.listenerAdded = "true";
+      }
       const useWhisperEl = document.getElementById("useWhisper");
       if (useWhisperEl) useWhisperEl.value = (state.project.use_whisper || false) ? "on" : "off";
       
@@ -494,6 +503,7 @@ function updateUI() {
   renderShots(PROJECT_STATE);
   updateButtonStates();
   updatePipelineNav(PROJECT_STATE);
+  updateVideoStats();  // v1.8.0: Update img2vid stats
 }
 
 function updateButtonStates() {
@@ -2331,6 +2341,12 @@ function renderShots(state) {
             <button class="shot-ref-btn" onclick="openShotRefPicker('${sh.shot_id}')" title="Add reference">+</button>
             <button class="shot-edit-go" onclick="quickEditShot('${sh.shot_id}', document.querySelector('.shot-edit-input[data-shot-id=\\'${sh.shot_id}\\']').value)" title="Apply edit">→</button>
           </div>
+          <div class="shot-video-row" style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+            ${sh.render?.video?.video_url 
+              ? `<span class="shot-video-badge" title="Video generated with ${sh.render.video.model}">✓ VIDEO (${sh.render.video.duration}s)</span>`
+              : `<button class="shot-btn accent" onclick="generateShotVideoUI('${sh.shot_id}')" title="Generate video for this shot">🎬 GEN VIDEO</button>`
+            }
+          </div>
           ` : ''}
         </div>
       </div>
@@ -3336,120 +3352,313 @@ async function downloadVideo(url, filename) {
   }
 }
 
-// ========= Animate Module =========
+// ========= Animate Module (v1.8.0: Img2Vid) =========
 
-let ANIMATION_QUEUE = [];
-let ACTIVE_ANIMATIONS = 0;
-const MAX_CONCURRENT_ANIMATIONS = 3;
-let STOP_ANIMATION_REQUESTED = false;
+let VIDEO_GENERATION_QUEUE = [];
+let ACTIVE_VIDEO_GENERATIONS = 0;
+const MAX_CONCURRENT_VIDEO_GEN = 2;  // Limit concurrent img2vid API calls
+let STOP_VIDEO_GEN_REQUESTED = false;
 
-async function animateShot(shotId) {
-  const videoModel = document.getElementById("videoModel")?.value || "none";
-  
-  if (videoModel === "none") {
-    showError("Select a video model in PROJECT settings first");
-    return;
-  }
-  
-  setModuleStatus("animate", "processing", "Animating shot...");
-  
+async function generateAllVideos() {
   try {
-    const response = await fetch(
-      `/api/project/${pid()}/shot/${shotId}/animate`,
-      {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ video_model: videoModel })
-      }
-    );
-    
-    const result = await response.json();
-    
-    if (result.success) {
-      setModuleStatus("animate", "done", `Shot animated! Cost: $${result.cost.toFixed(4)}`);
-      await refreshFromServer();
-      updateAnimationStats();
-    } else {
-      setModuleStatus("animate", "error", result.error || "Animation failed");
+    if (!pid()) {
+      showError("No project loaded");
+      return;
     }
-  } catch (error) {
-    console.error("[Animate] Animation error:", error);
-    setModuleStatus("animate", "error", error.message);
+    
+    const videoModel = document.getElementById("videoModel")?.value || "none";
+    if (videoModel === "none" || !videoModel) {
+      showError("Select a video model in PROJECT settings first");
+      return;
+    }
+    
+    const shots = PROJECT_STATE?.storyboard?.shots || [];
+    const renderedShots = shots.filter(s => s.render?.image_url);
+    
+    if (renderedShots.length === 0) {
+      showError("No rendered shots found. Render shots first in PREVIEW.");
+      return;
+    }
+    
+    // Filter shots that don't have video yet
+    const shotsToGenerate = renderedShots.filter(s => !s.render?.video?.video_url);
+    
+    if (shotsToGenerate.length === 0) {
+      showSuccess("All shots already have videos!");
+      return;
+    }
+    
+    console.log(`[Img2Vid] Generating videos for ${shotsToGenerate.length} shots`);
+    
+    // Build queue
+    VIDEO_GENERATION_QUEUE = shotsToGenerate.map(s => s.shot_id);
+    STOP_VIDEO_GEN_REQUESTED = false;
+    
+    // Update UI
+    document.getElementById("generateAllVideosBtn").classList.add("hidden");
+    document.getElementById("stopVideoGenBtn").classList.remove("hidden");
+    setStatus(`Generating videos…`, null, "animateStatus");
+    
+    // Process queue
+    while (VIDEO_GENERATION_QUEUE.length > 0 && !STOP_VIDEO_GEN_REQUESTED) {
+      while (ACTIVE_VIDEO_GENERATIONS < MAX_CONCURRENT_VIDEO_GEN && VIDEO_GENERATION_QUEUE.length > 0) {
+        const shotId = VIDEO_GENERATION_QUEUE.shift();
+        ACTIVE_VIDEO_GENERATIONS++;
+        
+        generateShotVideo(shotId).finally(() => {
+          ACTIVE_VIDEO_GENERATIONS--;
+        });
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // Wait for active generations to complete
+    while (ACTIVE_VIDEO_GENERATIONS > 0) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // Done
+    document.getElementById("generateAllVideosBtn").classList.remove("hidden");
+    document.getElementById("stopVideoGenBtn").classList.add("hidden");
+    
+    if (STOP_VIDEO_GEN_REQUESTED) {
+      setStatus("Video generation stopped", 0, "animateStatus");
+      showSuccess("Video generation stopped");
+    } else {
+      setStatus("Videos generated", 100, "animateStatus");
+      showSuccess(`Generated ${shotsToGenerate.length} videos!`);
+      updateVideoStats();
+    }
+    
+  } catch (e) {
+    console.error("[Img2Vid] Error:", e);
+    showError(`Video generation failed: ${e.message}`);
+    document.getElementById("generateAllVideosBtn").classList.remove("hidden");
+    document.getElementById("stopVideoGenBtn").classList.add("hidden");
   }
 }
 
-async function animateAllShots() {
-  if (!PROJECT_STATE) {
-    showError("No project loaded");
-    return;
-  }
-  
-  const videoModel = document.getElementById("videoModel")?.value || "none";
-  
-  if (videoModel === "none") {
-    showError("Select a video model in PROJECT settings first");
-    return;
-  }
-  
-  // Collect all shot IDs that need animation
-  const shotIds = [];
-  for (const seq of PROJECT_STATE.sequences || []) {
-    for (const shot of seq.shots || []) {
-      if (shot.render_url && !shot.video_url) {
-        shotIds.push(shot.shot_id);
-      }
-    }
-  }
-  
-  if (shotIds.length === 0) {
-    showError("No shots available to animate. Render shots first in STORYBOARD section.");
-    return;
-  }
-  
-  STOP_ANIMATION_REQUESTED = false;
-  setModuleStatus("animate", "processing", `Starting animation of ${shotIds.length} shots...`);
-  document.getElementById("stopAnimateBtn").classList.remove("hidden");
-  document.getElementById("animateAllBtn").disabled = true;
-  document.getElementById("animateSequenceBtn").disabled = true;
-  
+async function generateShotVideo(shotId) {
   try {
-    const response = await fetch(
-      `/api/project/${pid()}/shots/animate-batch`,
-      {
+    const videoModel = document.getElementById("videoModel")?.value || "none";
+    const remaining = VIDEO_GENERATION_QUEUE.length + ACTIVE_VIDEO_GENERATIONS;
+    
+    const progressEl = document.getElementById("videoGenProgress");
+    if (progressEl) {
+      progressEl.textContent = `Generating ${shotId}… (${remaining} remaining)`;
+    }
+    
+    const result = await apiCall(`/api/project/${pid()}/video/generate-shot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shot_id: shotId,
+        video_model: videoModel
+      })
+    });
+    
+    if (result.success) {
+      console.log(`[Img2Vid] Generated video for ${shotId}`);
+      
+      // Update local state
+      const shot = PROJECT_STATE.storyboard.shots.find(s => s.shot_id === shotId);
+      if (shot && result.video) {
+        if (!shot.render) shot.render = {};
+        shot.render.video = result.video;
+      }
+      
+      return result;
+    } else {
+      throw new Error("Generation failed");
+    }
+  } catch (e) {
+    console.error(`[Img2Vid] Failed ${shotId}:`, e);
+    showError(`Video generation failed for ${shotId}: ${e.message}`);
+    return null;
+  }
+}
+
+// UI wrapper for single shot video generation
+async function generateShotVideoUI(shotId) {
+  console.log("[Img2Vid] Generate video UI clicked for shot:", shotId);
+  try {
+    if (!pid()) {
+      showError("No project loaded");
+      console.error("[Img2Vid] No project loaded");
+      return;
+    }
+    
+    const videoModel = document.getElementById("videoModel")?.value || "none";
+    console.log("[Img2Vid] Video model:", videoModel);
+    if (videoModel === "none" || !videoModel) {
+      showError("Select a video model in PROJECT settings first");
+      console.error("[Img2Vid] No video model selected");
+      return;
+    }
+    
+    const shot = PROJECT_STATE?.storyboard?.shots?.find(s => s.shot_id === shotId);
+    if (!shot || !shot.render?.image_url) {
+      showError("Shot must be rendered first");
+      return;
+    }
+    
+    setStatus(`Generating video for ${shotId}…`, null, "animateStatus");
+    
+    const result = await apiCall(`/api/project/${pid()}/video/generate-shot`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shot_id: shotId,
+        video_model: videoModel
+      })
+    });
+    
+    if (result.success) {
+      // Update local state
+      if (shot && result.video) {
+        if (!shot.render) shot.render = {};
+        shot.render.video = result.video;
+      }
+      
+      setStatus(`Video generated for ${shotId}`, 100, "animateStatus");
+      showSuccess(`Video generated! (${result.video.duration}s)`);
+      
+      // Refresh UI
+      renderShots(PROJECT_STATE);
+      updateVideoStats();
+    } else {
+      throw new Error("Generation failed");
+    }
+  } catch (e) {
+    console.error(`[Img2Vid] Failed ${shotId}:`, e);
+    showError(`Video generation failed: ${e.message}`);
+    setStatus("Video generation failed", 0, "animateStatus");
+  }
+}
+
+function stopVideoGeneration() {
+  STOP_VIDEO_GEN_REQUESTED = true;
+  VIDEO_GENERATION_QUEUE = [];
+  document.getElementById("stopVideoGenBtn").classList.add("hidden");
+  document.getElementById("generateAllVideosBtn").classList.remove("hidden");
+  setStatus("Stopping…", null, "animateStatus");
+}
+
+function updateVideoStats() {
+  const shots = PROJECT_STATE?.storyboard?.shots || [];
+  const withVideo = shots.filter(s => s.render?.video?.video_url).length;
+  const rendered = shots.filter(s => s.render?.image_url).length;
+  
+  const statsEl = document.getElementById("videoStats");
+  if (statsEl) {
+    statsEl.innerHTML = `${withVideo} of ${rendered} rendered shots have videos`;
+  }
+}
+
+// Export with img2vid
+async function exportVideoImg2Vid() {
+  try {
+    if (!pid()) {
+      showError("No project loaded");
+      return;
+    }
+    
+    const videoModel = document.getElementById("videoModel")?.value || "none";
+    if (videoModel === "none" || !videoModel) {
+      showError("Select a video model in PROJECT settings first");
+      return;
+    }
+    
+    const shots = PROJECT_STATE?.storyboard?.shots || [];
+    const renderedShots = shots.filter(s => s.render?.image_url);
+    
+    if (renderedShots.length === 0) {
+      showError("No rendered shots found. Render shots first in PREVIEW.");
+      return;
+    }
+    
+    console.log(`[Img2Vid Export] Exporting ${renderedShots.length} shots with ${videoModel}`);
+    
+    const resolution = document.getElementById("videoResolution").value;
+    
+    setStatus(`Generating & exporting videos…`, null, "previewStatus");
+    document.getElementById("videoResult").innerHTML = 
+      `<span class="muted">Generating videos and encoding... This may take several minutes.</span>`;
+    
+    // Poll for status
+    let pollInterval = setInterval(async () => {
+      try {
+        const status = await apiCall(`/api/project/${pid()}/export/status`);
+        if (status && status.status === "processing" && status.message) {
+          document.getElementById("videoResult").innerHTML = `<span class="muted">${status.message}</span>`;
+          setStatus(status.message, null, "previewStatus");
+        }
+      } catch (e) {
+        // Ignore
+      }
+    }, 2000);
+    
+    try {
+      const result = await apiCall(`/api/project/${pid()}/video/export-img2vid`, {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          shot_ids: shotIds,
-          video_model: videoModel
+          video_model: videoModel,
+          resolution: resolution,
+          fps: 30
         })
+      });
+      
+      clearInterval(pollInterval);
+      
+      if (result.video_url) {
+        const projectName = PROJECT_STATE?.project?.name || "video";
+        const sanitizedName = projectName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+        const filename = `${sanitizedName}_animated.mp4`;
+        
+        document.getElementById("videoResult").innerHTML = `
+          <div style="margin-top: 12px;">
+            <video controls width="100%" style="max-width: 800px; border-radius: 8px;">
+              <source src="${result.video_url}?t=${Date.now()}" type="video/mp4">
+            </video>
+            <div style="margin-top: 8px;">
+              <button class="accent-btn" onclick="downloadVideo('${result.video_url}', '${filename}')">DOWNLOAD VIDEO</button>
+              <span class="muted" style="margin-left: 12px;">
+                ${result.shots_exported} shots • ${result.video_model} • ${result.generation_time?.toFixed(1)}s generation
+              </span>
+            </div>
+          </div>
+        `;
+        setStatus("Animated export complete", 100, "previewStatus");
+        updateVideoStats();
+      } else {
+        throw new Error("No video URL returned");
       }
-    );
-    
-    const result = await response.json();
-    
-    if (result.success) {
-      setModuleStatus(
-        "animate", 
-        "done", 
-        `${result.animated_count}/${shotIds.length} shots animated. Cost: $${result.total_cost.toFixed(2)}`
-      );
-      await refreshFromServer();
-      updateAnimationStats();
-      renderShotVideosGrid();
-    } else {
-      setModuleStatus("animate", "error", result.error || "Batch animation failed");
+    } catch (e) {
+      clearInterval(pollInterval);
+      throw e;
     }
-  } catch (error) {
-    console.error("[Animate] Batch animation error:", error);
-    setModuleStatus("animate", "error", error.message);
-  } finally {
-    document.getElementById("stopAnimateBtn").classList.add("hidden");
-    document.getElementById("animateAllBtn").disabled = false;
-    document.getElementById("animateSequenceBtn").disabled = false;
+  } catch (e) {
+    console.error("[Img2Vid Export] Failed:", e);
+    showError(`Animated export failed: ${e.message}`);
+    document.getElementById("videoResult").innerHTML = `
+      <div style="color: #ef4444; padding: 12px; background: rgba(239,68,68,0.1); border-radius: 4px;">
+        <strong>Export Failed:</strong> ${e.message}
+      </div>
+    `;
+    setStatus("Export failed", 0, "previewStatus");
   }
 }
 
-async function animateSelectedSequence() {
+// Legacy animate function (kept for compatibility)
+async function animateShot(shotId) {
+  return generateShotVideo(shotId);
+}
+
+// ========= Montage Module (Legacy) =========
+
+async function renderMontage() {
   if (!PROJECT_STATE || SELECTED_SEQUENCE_IDS.length === 0) {
     showError("No sequence selected. Select a sequence first.");
     return;

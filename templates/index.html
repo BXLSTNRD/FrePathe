@@ -98,9 +98,11 @@
     <div class="field-group">
       <select id="videoModel">
         <option value="" disabled selected hidden>Video Model</option>
-        <option value="kling">Kling 1.6</option>
-        <option value="runway">Runway Gen-3</option>
-        <option value="minimax">MiniMax</option>
+        <option value="none">None (Preview Only)</option>
+        <option value="ltx2_i2v">LTX-2 19B (Fast + Audio)</option>
+        <option value="kling_i2v">Kling v2.6 Pro (Cinematic)</option>
+        <option value="veo31_i2v">Veo 3.1 (Google SOTA)</option>
+        <option value="wan_i2v">Wan v2.6 (Cost-Effective)</option>
       </select>
     </div>
     <div class="field-group">
@@ -247,10 +249,12 @@
         <option value="3840x2160">4K (3840×2160)</option>
       </select>
     </div>
-    <button onclick="exportVideo()" id="exportVideoBtn" class="accent-btn">EXPORT PREVIEW</button>
+    <button onclick="exportVideo()" id="exportVideoBtn" class="accent-btn">EXPORT PREVIEW (Stills)</button>
+    <button onclick="exportVideoImg2Vid()" id="exportImg2VidBtn" class="accent-btn" style="margin-left: 8px;">EXPORT ANIMATED</button>
   </div>
   <div id="videoResult" class="muted" style="margin-top: 16px;">
-    Render all shots first, then export preview with audio.
+    <strong>Preview (Stills):</strong> Quick export with static images<br/>
+    <strong>Animated:</strong> Full img2vid export (requires video generation first)
   </div>
 </div>
 </div>
@@ -258,6 +262,23 @@
 <!-- ANIMATE -->
 <div class="card" id="section-animate">
 <h2>ANIMATE <span id="animateStatus" class="module-status"></span></h2>
+<div class="module-content">
+  <div class="info-box" style="margin-bottom: 16px;">
+    <strong>Image-to-Video Generation</strong><br/>
+    Transform rendered stills into animated video clips using AI.<br/>
+    Each shot gets motion based on camera language, energy, and environment.
+  </div>
+  
+  <div class="action-bar" style="margin-bottom: 16px;">
+    <button class="accent-btn" onclick="generateAllVideos()" id="generateAllVideosBtn">GENERATE ALL VIDEOS</button>
+    <button class="stop-btn hidden" onclick="stopVideoGeneration()" id="stopVideoGenBtn">STOP</button>
+    <span id="videoGenProgress" class="muted" style="margin-left: 12px;"></span>
+  </div>
+  
+  <div id="videoStats" class="muted" style="margin-top: 8px;">
+    Select video model in PROJECT settings first.
+  </div>
+</div>
 <div class="module-content">
   <!-- Action Buttons -->
   <div class="row" style="gap: 8px;">

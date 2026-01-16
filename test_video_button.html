@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Video Button</title>
+    <script>
+        // Minimal test to see if onclick works
+        function generateShotVideoUI(shotId) {
+            console.log("✅ BUTTON WORKS! Shot ID:", shotId);
+            alert("Button clicked! Shot: " + shotId);
+        }
+    </script>
+</head>
+<body>
+    <h1>Test Gen Video Button</h1>
+    <p>If this button works, the problem is elsewhere:</p>
+    
+    <!-- Test button with exact same HTML as in app.js -->
+    <button class="shot-btn accent" onclick="generateShotVideoUI('test_shot_01')" title="Generate video for this shot">
+        🎬 GEN VIDEO
+    </button>
+    
+    <h2>Debug Checklist:</h2>
+    <ol>
+        <li>Is a project loaded? (Check PROJECT_STATE)</li>
+        <li>Is a shot rendered? (Check shot.render.image_url)</li>
+        <li>Is video model selected? (Check videoModel !== "none")</li>
+        <li>Does generateShotVideoUI function exist? (Check console)</li>
+        <li>Are there JavaScript errors? (Check console)</li>
+    </ol>
+    
+    <script>
+        // Check if function is defined
+        console.log("generateShotVideoUI function exists:", typeof generateShotVideoUI === "function");
+    </script>
+</body>
+</html>

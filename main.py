@@ -64,7 +64,11 @@ from services.storyboard_service import (
 )
 from services.export_service import (
     update_export_status, get_export_status,
-    check_ffmpeg, export_video,
+    check_ffmpeg, export_video, export_video_with_img2vid,
+)
+from services.video_service import (
+    call_img2vid_with_retry, generate_shot_video, generate_videos_for_shots,
+    list_video_models, get_video_model_info, VIDEO_MODELS, DEFAULT_VIDEO_MODEL,
 )
 from services.llm_service import (
     extract_json_object, call_openai_json, call_claude_json,
@@ -2746,3 +2750,144 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
     except Exception as e:
         update_export_status(project_id, "error", 0, 0, f"Export failed: {str(e)[:100]}")
         raise HTTPException(500, f"Export failed: {str(e)}")
+
+
+# ========= v1.8.0: Img2Vid Endpoints =========
+
+@app.get("/api/video/models")
+def api_list_video_models():
+    """v1.8.0: List available img2vid models."""
+    return {"models": list_video_models()}
+
+
+@app.post("/api/project/{project_id}/video/generate-shot")
+def api_generate_shot_video(project_id: str, payload: Dict[str, Any]):
+    """
+    v1.8.0: Generate video for a single shot using img2vid AI.
+    
+    Payload:
+        shot_id: str - Shot ID to generate video for
+        video_model: str (optional) - Model to use (ltx2_i2v, kling_i2v, veo31_i2v, wan_i2v)
+    """
+    lock = get_project_lock(project_id)
+    with lock:
+        state = load_project(project_id)
+        
+        shot_id = payload.get("shot_id")
+        print(f"[API] Generate video for shot: {shot_id}")
+        if not shot_id:
+            raise HTTPException(400, "Missing shot_id")
+        
+        # Find shot
+        shots = state.get("storyboard", {}).get("shots", [])
+        print(f"[API] Total shots in project: {len(shots)}")
+        print(f"[API] Available shot IDs: {[s.get('shot_id') for s in shots[:5]]}")
+        shot = next((s for s in shots if s.get("shot_id") == shot_id), None)
+        
+        if not shot:
+            raise HTTPException(404, f"Shot {shot_id} not found")
+        
+        # Check if shot has render
+        if not shot.get("render", {}).get("image_url"):
+            raise HTTPException(400, f"Shot {shot_id} has no rendered image. Render the shot first.")
+        
+        # Get video model
+        video_model = payload.get("video_model") or state.get("project", {}).get("video_model", DEFAULT_VIDEO_MODEL)
+        print(f"[API] Using video model: {video_model}")
+        
+        if video_model == "none":
+            raise HTTPException(400, "No video model selected. Please select a video model.")
+        
+        try:
+            # Generate video
+            print(f"[API] Calling generate_shot_video...")
+            updated_shot = generate_shot_video(state, shot, video_model)
+            
+            # Update shot in state
+            for i, s in enumerate(shots):
+                if s.get("shot_id") == shot_id:
+                    shots[i] = updated_shot
+                    break
+            
+            save_project(state)
+            
+            return {
+                "success": True,
+                "shot_id": shot_id,
+                "video": updated_shot["render"]["video"],
+            }
+        
+        except Exception as e:
+            print(f"[API] ERROR: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(500, f"Video generation failed: {str(e)}")
+
+
+@app.post("/api/project/{project_id}/video/generate-batch")
+def api_generate_batch_videos(project_id: str, payload: Dict[str, Any]):
+    """
+    v1.8.0: Generate videos for multiple shots using img2vid AI.
+    
+    Payload:
+        shot_ids: List[str] (optional) - Specific shot IDs (None = all rendered shots)
+        video_model: str (optional) - Model to use
+    """
+    lock = get_project_lock(project_id)
+    with lock:
+        state = load_project(project_id)
+        
+        shot_ids = payload.get("shot_ids")
+        video_model = payload.get("video_model")
+        
+        try:
+            results = generate_videos_for_shots(state, shot_ids, video_model)
+            save_project(state)
+            
+            return {
+                "success": True,
+                "results": results,
+            }
+        
+        except Exception as e:
+            raise HTTPException(500, f"Batch video generation failed: {str(e)}")
+
+
+@app.post("/api/project/{project_id}/video/export-img2vid")
+def api_export_video_img2vid(project_id: str, payload: Dict[str, Any] = {}):
+    """
+    v1.8.0: Export storyboard using img2vid AI instead of static stills.
+    
+    Generates video clips for each shot using img2vid, then concatenates with audio.
+    
+    Payload:
+        video_model: str (optional) - Video model to use
+        fps: int (optional) - Frames per second for concat (default: 30)
+        resolution: str (optional) - Output resolution (default: "1920x1080")
+    """
+    lock = get_project_lock(project_id)
+    with lock:
+        state = load_project(project_id)
+        
+        video_model = payload.get("video_model")
+        fps = int(payload.get("fps", 30))
+        resolution = payload.get("resolution", "1920x1080")
+        
+        try:
+            result = export_video_with_img2vid(
+                state=state,
+                project_id=project_id,
+                video_model=video_model,
+                fps=fps,
+                resolution=resolution,
+            )
+            
+            # Save state (shots now have video data)
+            save_project(state)
+            
+            return result
+        
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(500, f"Img2vid export failed: {str(e)}")

@@ -87,6 +87,12 @@ FAL_FLUX2_EDIT = f"{FAL_BASE}/fal-ai/flux-2/edit"
 FAL_NANOBANANA_EDIT = f"{FAL_BASE}/fal-ai/nano-banana-pro/edit"
 FAL_SEEDREAM45_EDIT = f"{FAL_BASE}/fal-ai/bytedance/seedream/v4.5/edit"
 
+# Image-to-Video (img2vid)
+FAL_LTX2_I2V = f"{FAL_BASE}/fal-ai/ltx-2-19b/image-to-video"
+FAL_KLING_I2V = f"{FAL_BASE}/fal-ai/kling-video/v2.6/pro/image-to-video"
+FAL_VEO31_I2V = f"{FAL_BASE}/fal-ai/veo3.1/image-to-video"
+FAL_WAN_I2V = f"{FAL_BASE}/wan/v2.6/image-to-video"
+
 # ========= Cost Tracking =========
 API_COSTS = {
     # Audio (FAL pricing Jan 2026)
@@ -113,6 +119,11 @@ API_COSTS = {
     "fal-ai/flux2_edit": 0.012,
     "fal-ai/seedream45_edit": 0.04,
     "fal-ai/kontext_edit": 0.05,
+    # Image-to-Video (estimated Jan 2026 pricing)
+    "fal-ai/ltx-2-19b/image-to-video": 0.10,
+    "fal-ai/kling-video/v2.6/pro/image-to-video": 0.25,
+    "fal-ai/veo3.1/image-to-video": 0.20,
+    "wan/v2.6/image-to-video": 0.15,
     # LLM
     "claude-sonnet-4-5-20250929": 0.02,
     "claude-3-5-sonnet-latest": 0.015,
@@ -133,6 +144,11 @@ MODEL_TO_ENDPOINT = {
     "flux-pro": "fal-ai/flux-pro/v1.1",
     "recraft-v3": "fal-ai/recraft/v3",
     "seedream45": "fal-ai/bytedance/seedream/v4.5/text-to-image",
+    # Image-to-Video
+    "ltx2_i2v": "fal-ai/ltx-2-19b/image-to-video",
+    "kling_i2v": "fal-ai/kling-video/v2.6/pro/image-to-video",
+    "veo31_i2v": "fal-ai/veo3.1/image-to-video",
+    "wan_i2v": "wan/v2.6/image-to-video",
 }
 
 SESSION_COST = {"total": 0.0, "calls": []}

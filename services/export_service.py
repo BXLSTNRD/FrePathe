@@ -1,6 +1,6 @@
 """
-Fré Pathé v1.7 - Export Service
-Handles video export with FFmpeg.
+Fré Pathé v1.8.0 - Export Service
+Handles video export with FFmpeg and img2vid AI.
 """
 import subprocess
 import shutil
@@ -10,10 +10,11 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 
-from .config import PATH_MANAGER
+from .config import PATH_MANAGER, DATA
 from .project_service import (
     sanitize_filename,
     get_project_video_dir,
+    download_image_locally,
 )
 
 
@@ -308,6 +309,203 @@ def export_video(
             "duration_sec": total_duration,
             "scene_transitions": scene_transitions,
             "skipped_shots": skipped,
+        }
+        
+    except subprocess.CalledProcessError as e:
+        update_export_status(project_id, "error", 0, 0, f"FFmpeg error: {str(e)[:100]}")
+        raise HTTPException(500, f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        update_export_status(project_id, "error", 0, 0, f"Export failed: {str(e)[:100]}")
+        raise HTTPException(500, f"Export failed: {str(e)}")
+
+
+# ========= Img2Vid Export =========
+
+def export_video_with_img2vid(
+    state: Dict[str, Any],
+    project_id: str,
+    video_model: Optional[str] = None,
+    fps: int = 30,
+    resolution: str = "1920x1080"
+) -> Dict[str, Any]:
+    """
+    Export storyboard using img2vid AI instead of static stills.
+    
+    Generates video clips for each shot using img2vid, then concatenates with audio.
+    
+    Args:
+        state: Project state
+        project_id: Project ID
+        video_model: Video model to use (None = use project setting)
+        fps: Frames per second (for concat)
+        resolution: Output resolution
+    
+    Returns:
+        Dict with video_url, shots_exported, duration_sec, generation_time
+    """
+    from .video_service import generate_shot_video, DEFAULT_VIDEO_MODEL
+    
+    if not check_ffmpeg():
+        raise HTTPException(500, "FFmpeg not found. Install FFmpeg and add to PATH.")
+    
+    shots = state.get("storyboard", {}).get("shots", [])
+    
+    if not shots:
+        raise HTTPException(400, "No shots to export")
+    
+    # Get rendered shots only
+    rendered_shots = [s for s in shots if s.get("render", {}).get("image_url")]
+    if not rendered_shots:
+        raise HTTPException(400, "No rendered shots. Render shots first.")
+    
+    # Sort by start time
+    rendered_shots.sort(key=lambda s: float(s.get("start", 0)))
+    
+    # Get audio file
+    audio_path = state.get("audio_file_path")
+    if not audio_path or not Path(audio_path).exists():
+        raise HTTPException(400, "Audio file not found")
+    
+    # Get video model
+    if not video_model:
+        video_model = state.get("project", {}).get("video_model", DEFAULT_VIDEO_MODEL)
+        if video_model == "none":
+            raise HTTPException(400, "No video model selected. Please select a video model in project settings.")
+    
+    # Setup directories
+    video_dir = get_project_video_dir(state)
+    temp_dir = video_dir / "temp_img2vid"
+    temp_dir.mkdir(exist_ok=True)
+    
+    # Output path
+    project_title = sanitize_filename(state.get("project", {}).get("title", "video"), 30)
+    output_path = video_dir / f"{project_title}_img2vid_export.mp4"
+    
+    try:
+        # Step 1: Generate video for each shot using img2vid
+        video_clips = []
+        skipped = []
+        total_shots = len(rendered_shots)
+        generation_start = time.time()
+        
+        print(f"[IMG2VID] Processing {total_shots} shots with {video_model}...")
+        update_export_status(project_id, "processing", 0, total_shots, f"Generating videos with {video_model}...")
+        
+        for i, shot in enumerate(rendered_shots):
+            shot_id = shot.get("shot_id", f"shot_{i}")
+            
+            try:
+                # Check if shot already has video
+                if shot.get("render", {}).get("video", {}).get("video_url"):
+                    video_url = shot["render"]["video"]["video_url"]
+                    print(f"[IMG2VID] Using existing video for {shot_id}")
+                else:
+                    # Generate video
+                    print(f"[IMG2VID] Generating video for {shot_id}...")
+                    updated_shot = generate_shot_video(
+                        state=state,
+                        shot=shot,
+                        video_model=video_model,
+                        download_locally=True,
+                    )
+                    video_url = updated_shot["render"]["video"]["video_url"]
+                    
+                    # Update shot in state
+                    for idx, s in enumerate(shots):
+                        if s.get("shot_id") == shot_id:
+                            shots[idx] = updated_shot
+                            break
+                
+                # Resolve to local path
+                if video_url.startswith("/"):
+                    video_path = PATH_MANAGER.from_url(video_url)
+                else:
+                    video_path = Path(video_url)
+                
+                if not video_path.exists():
+                    raise Exception(f"Video file not found: {video_path}")
+                
+                duration = float(shot.get("end", 0)) - float(shot.get("start", 0))
+                
+                video_clips.append({
+                    "path": video_path,
+                    "shot": shot,
+                    "duration": duration,
+                    "seq_id": shot.get("sequence_id", ""),
+                })
+                
+                print(f"[IMG2VID] Processed {i+1}/{total_shots}: {shot_id}")
+                update_export_status(project_id, "processing", i+1, total_shots, f"Generated video {i+1}/{total_shots}: {shot_id}")
+                
+            except Exception as e:
+                print(f"[IMG2VID] Failed {shot_id}: {str(e)}")
+                skipped.append(shot_id)
+        
+        generation_time = time.time() - generation_start
+        print(f"[IMG2VID] Generated {len(video_clips)} videos in {generation_time:.1f}s")
+        
+        if not video_clips:
+            update_export_status(project_id, "error", 0, 0, "No video clips generated")
+            raise HTTPException(500, "No video clips generated")
+        
+        # Step 2: Create concat file
+        total_duration = sum(c["duration"] for c in video_clips)
+        print(f"[IMG2VID] Concatenating {len(video_clips)} clips (total {total_duration:.1f}s)...")
+        update_export_status(project_id, "processing", total_shots, total_shots, f"Concatenating {len(video_clips)} video clips...")
+        
+        concat_file = temp_dir / "concat.txt"
+        with open(concat_file, "w") as f:
+            for clip in video_clips:
+                clip_path_str = str(clip["path"]).replace("\\", "/")
+                f.write(f"file '{clip_path_str}'\n")
+        
+        # Step 3: Concat videos and add/mix audio
+        success = concat_clips_with_audio(
+            concat_file=concat_file,
+            audio_path=Path(audio_path),
+            output_path=output_path
+        )
+        
+        if not success:
+            update_export_status(project_id, "error", 0, 0, "FFmpeg concat failed")
+            raise HTTPException(500, "FFmpeg concat failed")
+        
+        # Calculate scene transitions
+        scene_transitions = sum(
+            1 for i in range(1, len(video_clips)) 
+            if video_clips[i-1]["seq_id"] != video_clips[i]["seq_id"]
+        )
+        
+        # Cleanup temp files
+        try:
+            concat_file.unlink()
+        except:
+            pass
+        try:
+            temp_dir.rmdir()
+        except:
+            pass
+        
+        # Return video URL relative to DATA
+        rel_path = output_path.relative_to(DATA)
+        video_url = f"/renders/{rel_path.as_posix()}"
+        
+        update_export_status(
+            project_id, "done", 
+            total_shots, total_shots, 
+            f"Img2Vid export complete: {len(video_clips)} clips, {total_duration:.1f}s"
+        )
+        
+        return {
+            "video_url": video_url,
+            "shots_exported": len(video_clips),
+            "duration_sec": total_duration,
+            "scene_transitions": scene_transitions,
+            "skipped_shots": skipped,
+            "generation_time": generation_time,
+            "video_model": video_model,
         }
         
     except subprocess.CalledProcessError as e:

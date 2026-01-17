@@ -418,11 +418,14 @@ def export_video_with_img2vid(
                             shots[idx] = updated_shot
                             break
                 
-                # Resolve to local path
-                if video_url.startswith("/"):
+                # Resolve to local path - handle both /files/ URLs and absolute paths
+                if video_url.startswith("/files/"):
                     video_path = PATH_MANAGER.from_url(video_url)
-                else:
+                elif Path(video_url).is_absolute():
                     video_path = Path(video_url)
+                else:
+                    # Relative path - resolve from project dir
+                    video_path = get_project_video_dir(project_id) / video_url
                 
                 if not video_path.exists():
                     raise Exception(f"Video file not found: {video_path}")

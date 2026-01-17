@@ -782,6 +782,7 @@ button.tiny {
   flex-shrink: 0;
   height: 6px;
   -webkit-appearance: none;
+  appearance: none;
   background: var(--border);
   border-radius: 3px;
   cursor: pointer;
@@ -2452,4 +2453,119 @@ button.tiny {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: #f5b712;
+}
+
+/* v1.8.1: Video player in shot cards */
+.shot-video-player {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  background: #000;
+}
+
+.shot-video-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.shot-video-play-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 48px;
+  height: 48px;
+  background: rgba(245, 183, 18, 0.9);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: #000;
+  pointer-events: none;
+  transition: all 0.2s;
+}
+
+.shot-video-player:hover .shot-video-play-btn {
+  background: rgba(255, 201, 51, 1);
+  transform: translate(-50%, -50%) scale(1.1);
+}
+
+.shot-video-duration {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* Video modal popup */
+.video-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-modal-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.9);
+  cursor: pointer;
+}
+
+.video-modal-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  z-index: 10001;
+}
+
+.video-modal-content video {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.video-modal-close {
+  position: absolute;
+  top: -40px;
+  right: 0;
+  width: 32px;
+  height: 32px;
+  background: rgba(245, 183, 18, 0.9);
+  border: none;
+  border-radius: 50%;
+  color: #000;
+  font-size: 20px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.video-modal-close:hover {
+  background: #ffc933;
+  transform: scale(1.1);
 }

@@ -1,5 +1,5 @@
 """
-Fré Pathé v1.8.0 - Video Service
+Fré Pathé v1.8.1 - Video Service
 Image-to-video generation via FAL AI (img2vid).
 """
 import time
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import (
-    FAL_KEY, FAL_LTX2_I2V, FAL_KLING_I2V, FAL_VEO31_I2V, FAL_WAN_I2V,
+    FAL_KEY, FAL_LTX2_I2V, FAL_KLING_I2V, FAL_VEO31_I2V, FAL_WAN_I2V, FAL_HAILUO_I2V, FAL_KANDINSKY5_I2V,
     fal_headers, track_cost, now_iso, retry_on_502, PATH_MANAGER,
 )
 from .project_service import (
@@ -37,12 +37,12 @@ VIDEO_MODELS = {
         "description": "Cinematic quality with fluid motion and audio",
     },
     "veo31_i2v": {
-        "name": "Veo 3.1",
+        "name": "Veo 3.1 Fast",
         "endpoint": FAL_VEO31_I2V,
-        "cost": 0.20,
-        "duration_range": (5, 8),
-        "supports_audio": False,
-        "description": "Google's state-of-the-art video generation",
+        "cost": 0.12,
+        "duration_range": (4, 8),
+        "supports_audio": True,
+        "description": "Google SOTA with audio (4s/6s/8s, 720p/1080p/4K)",
     },
     "wan_i2v": {
         "name": "Wan v2.6",
@@ -51,6 +51,22 @@ VIDEO_MODELS = {
         "duration_range": (4, 8),
         "supports_audio": False,
         "description": "Cost-effective img2vid with good quality",
+    },
+    "hailuo_i2v": {
+        "name": "MiniMax Hailuo 2.3 Pro",
+        "endpoint": FAL_HAILUO_I2V,
+        "cost": 0.18,
+        "duration_range": (5, 10),
+        "supports_audio": True,
+        "description": "High-quality 1080p video with audio (6s fixed)",
+    },
+    "kandinsky5_i2v": {
+        "name": "Kandinsky5 Pro",
+        "endpoint": FAL_KANDINSKY5_I2V,
+        "cost": 0.08,
+        "duration_range": (5, 5),
+        "supports_audio": False,
+        "description": "Fast generation (5s fixed, 512p/1024p)",
     },
 }
 
@@ -86,6 +102,7 @@ def upload_image_to_fal(image_url: str, state: Optional[Dict[str, Any]] = None) 
                 pass
     
     # Convert /files/ URL to absolute path if needed
+    original_url = image_url  # Store for cache key
     if image_url.startswith("/files/") or image_url.startswith("/renders/"):
         # Use PATH_MANAGER.from_url() for proper conversion
         image_path = PATH_MANAGER.from_url(image_url)
@@ -98,15 +115,15 @@ def upload_image_to_fal(image_url: str, state: Optional[Dict[str, Any]] = None) 
         print(f"[VIDEO] Uploading {image_url} to FAL...")
         fal_url = fal_client.upload_file(image_url)
         
-        # Store in cache (use original URL as key)
+        # Store in cache (use /files/ URL format as key for consistency)
         if state:
             if "project" not in state:
                 state["project"] = {}
             if "fal_upload_cache" not in state["project"]:
                 state["project"]["fal_upload_cache"] = {}
-            # Cache with original /files/ URL as key
-            original_url = image_url if image_url.startswith("/files/") else image_url
-            state["project"]["fal_upload_cache"][original_url] = fal_url
+            # Always use /files/ URL format as cache key
+            cache_key = original_url
+            state["project"]["fal_upload_cache"][cache_key] = fal_url
         
         return fal_url
     except Exception as e:
@@ -164,21 +181,54 @@ def call_img2vid(
     
     # Model-specific parameters
     if model_key == "ltx2_i2v":
-        payload["duration"] = int(duration)
-        payload["aspect_ratio"] = aspect_ratio
-        payload["num_inference_steps"] = 30
+        # LTX-2 Distilled with LoRA endpoint
+        num_frames = int(25 * duration)  # 25 fps
+        payload["num_frames"] = min(481, max(9, num_frames))
+        payload["generate_audio"] = True
+        payload["use_multiscale"] = True
+        payload["fps"] = 25
+        payload["loras"] = []  # Empty loras array required
     elif model_key == "kling_i2v":
         payload["duration"] = int(duration)
         payload["aspect_ratio"] = aspect_ratio
         payload["creativity"] = 0.7
     elif model_key == "veo31_i2v":
-        payload["duration"] = int(duration)
+        # Veo 3.1 Fast uses duration enum: "4s", "6s", "8s"
+        dur = int(duration)
+        if dur <= 5:
+            veo_duration = "4s"
+        elif dur <= 7:
+            veo_duration = "6s"
+        else:
+            veo_duration = "8s"
+        payload["duration"] = veo_duration
+        payload["aspect_ratio"] = aspect_ratio
+        payload["generate_audio"] = True
+        payload["resolution"] = "720p"  # 720p/1080p/4k supported
     elif model_key == "wan_i2v":
-        # Wan uses string duration: "5", "10", "15"
-        wan_duration = str(min(15, max(5, int(duration))))
+        # Wan uses string duration: "5", "10", "15" - round to nearest
+        dur = int(duration)
+        if dur <= 7:
+            wan_duration = "5"
+        elif dur <= 12:
+            wan_duration = "10"
+        else:
+            wan_duration = "15"
         payload["duration"] = wan_duration
-        # Wan uses 720p/1080p, not aspect ratios
-        payload["resolution"] = "1080p"
+        # Wan uses 720p/1080p with aspect ratio mapping
+        if aspect_ratio == "9:16":
+            payload["resolution"] = "720p"  # Vertical format
+        else:
+            payload["resolution"] = "1080p"  # Horizontal/square
+    elif model_key == "hailuo_i2v":
+        # Hailuo generates 6s videos, prompt optimizer enabled by default
+        payload["prompt_optimizer"] = True
+    elif model_key == "kandinsky5_i2v":
+        # Kandinsky5 Pro: 5s fixed duration, 512p or 1024p resolution
+        payload["duration"] = "5s"
+        payload["resolution"] = "1024P"  # 512P or 1024P
+        payload["num_inference_steps"] = 28
+        payload["acceleration"] = "regular"
     
     print(f"[VIDEO] Calling {model_info['name']} img2vid...")
     print(f"[VIDEO] Image: {image_url[:80]}...")
@@ -211,9 +261,10 @@ def call_img2vid(
         if not video_url:
             raise Exception(f"No video URL in response: {result}")
         
-        # Track cost
+        # Track cost - extract endpoint path for cost lookup
         if state:
-            track_cost(endpoint, 1, state)
+            endpoint_path = endpoint.replace("https://fal.run/", "")
+            track_cost(endpoint_path, 1, state)
         
         return {
             "video_url": video_url,

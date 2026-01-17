@@ -454,13 +454,25 @@ function loadProjectFromFile() {
       
       // v1.5.6: Load video model and whisper settings
       const videoModelEl = document.getElementById("videoModel");
-      if (videoModelEl) videoModelEl.value = state.project.video_model || "";
-      
+      if (videoModelEl && state.project.video_model) {
+        videoModelEl.value = state.project.video_model;
+      }
+
+      // v1.8.0: Save video model on change
       // v1.8.0: Save video model on change
       if (videoModelEl && !videoModelEl.dataset.listenerAdded) {
         videoModelEl.addEventListener("change", async () => {
-          PROJECT_STATE.project.video_model = videoModelEl.value;
-          await saveProject();
+          const newModel = videoModelEl.value;
+          PROJECT_STATE.project.video_model = newModel;
+          try {
+            await apiCall(`/api/project/${pid()}/settings`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ video_model: newModel })
+            });
+          } catch (e) {
+            console.error("Failed to save video model:", e);
+          }
         });
         videoModelEl.dataset.listenerAdded = "true";
       }
@@ -2341,10 +2353,14 @@ function renderShots(state) {
             <button class="shot-ref-btn" onclick="openShotRefPicker('${sh.shot_id}')" title="Add reference">+</button>
             <button class="shot-edit-go" onclick="quickEditShot('${sh.shot_id}', document.querySelector('.shot-edit-input[data-shot-id=\\'${sh.shot_id}\\']').value)" title="Apply edit">→</button>
           </div>
-          <div class="shot-video-row" style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+          <div class="shot-video-row" >
             ${sh.render?.video?.video_url 
-              ? `<span class="shot-video-badge" title="Video generated with ${sh.render.video.model}">✓ VIDEO (${sh.render.video.duration}s)</span>`
-              : `<button class="shot-btn accent" onclick="generateShotVideoUI('${sh.shot_id}')" title="Generate video for this shot">🎬 GEN VIDEO</button>`
+              ? `<div class="shot-video-player" onclick="playShotVideo('${sh.shot_id}', '${sh.render.video.video_url}')" title="Play video">
+                   <video class="shot-video-thumb" src="${cacheBust(sh.render.video.video_url)}" preload="metadata" muted></video>
+                   <div class="shot-video-overlay"><span class="play-icon"></span></div>
+                   <div class="shot-video-badge">${Math.round(sh.render.video.duration)}s</div>
+                 </div>`
+              : `<button class="small secondary" onclick="generateShotVideoUI('${sh.shot_id}')" >Video</button>`
             }
           </div>
           ` : ''}
@@ -3367,8 +3383,8 @@ async function generateAllVideos() {
     }
     
     const videoModel = document.getElementById("videoModel")?.value || "none";
-    if (videoModel === "none" || !videoModel) {
-      showError("Select a video model in PROJECT settings first");
+    if (videoModel === "none" || !videoModel || videoModel === "") {
+      showError("Select a video model in PROJECT settings first (not 'None')");
       return;
     }
     
@@ -3384,7 +3400,7 @@ async function generateAllVideos() {
     const shotsToGenerate = renderedShots.filter(s => !s.render?.video?.video_url);
     
     if (shotsToGenerate.length === 0) {
-      showSuccess("All shots already have videos!");
+      setStatus("All shots already have videos!");
       return;
     }
     
@@ -3424,12 +3440,15 @@ async function generateAllVideos() {
     
     if (STOP_VIDEO_GEN_REQUESTED) {
       setStatus("Video generation stopped", 0, "animateStatus");
-      showSuccess("Video generation stopped");
+      setStatus("Video generation stopped");
     } else {
       setStatus("Videos generated", 100, "animateStatus");
-      showSuccess(`Generated ${shotsToGenerate.length} videos!`);
-      updateVideoStats();
+      setStatus(`Generated ${shotsToGenerate.length} videos!`);
+      updateVideoStats();  // Update stats after batch completion
     }
+    
+    // Refresh project state to update UI
+    await refreshFromServer();
     
   } catch (e) {
     console.error("[Img2Vid] Error:", e);
@@ -3491,8 +3510,8 @@ async function generateShotVideoUI(shotId) {
     
     const videoModel = document.getElementById("videoModel")?.value || "none";
     console.log("[Img2Vid] Video model:", videoModel);
-    if (videoModel === "none" || !videoModel) {
-      showError("Select a video model in PROJECT settings first");
+    if (videoModel === "none" || !videoModel || videoModel === "") {
+      showError("Select a video model in PROJECT settings first (not 'None')");
       console.error("[Img2Vid] No video model selected");
       return;
     }
@@ -3515,14 +3534,16 @@ async function generateShotVideoUI(shotId) {
     });
     
     if (result.success) {
-      // Update local state
+      // Update local state AND replace thumbnail with video
       if (shot && result.video) {
         if (!shot.render) shot.render = {};
         shot.render.video = result.video;
+        // Also update the render image_url to show video in UI
+        shot.render.video_url = result.video.video_url;
       }
       
       setStatus(`Video generated for ${shotId}`, 100, "animateStatus");
-      showSuccess(`Video generated! (${result.video.duration}s)`);
+      setStatus(`Video generated! (${result.video.duration}s)`);
       
       // Refresh UI
       renderShots(PROJECT_STATE);
@@ -3543,6 +3564,26 @@ function stopVideoGeneration() {
   document.getElementById("stopVideoGenBtn").classList.add("hidden");
   document.getElementById("generateAllVideosBtn").classList.remove("hidden");
   setStatus("Stopping…", null, "animateStatus");
+}
+
+// v1.8.1: Play video in modal popup
+function playShotVideo(shotId, videoUrl) {
+  const modal = document.createElement("div");
+  modal.className = "video-modal";
+  modal.innerHTML = `
+    <div class="video-modal-backdrop" onclick="this.parentElement.remove()"></div>
+    <div class="video-modal-content">
+      <video controls autoplay loop>
+        <source src="${cacheBust(videoUrl)}" type="video/mp4">
+      </video>
+      <button class="video-modal-close" onclick="this.closest('.video-modal').remove()">✕</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  
+  // Play video
+  const video = modal.querySelector("video");
+  video.play();
 }
 
 function updateVideoStats() {
@@ -3784,7 +3825,7 @@ function renderShotVideosGrid() {
                          background: rgba(16, 185, 129, 0.9); color: white; border: none; 
                          padding: 12px 24px; border-radius: 6px; cursor: pointer; font-weight: 600;
                          font-size: 14px;">
-            ▶ Animate
+            <span class="play-icon"></span> Animate
           </button>
           <div class="shot-info" style="padding: 8px; font-size: 12px;">
             <strong>${shot.shot_type || 'Shot'}</strong>
@@ -3825,3 +3866,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 });
+
+
+
+

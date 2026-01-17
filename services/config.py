@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 # ========= Version =========
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 
 # ========= Threading Locks =========
 PROJECT_LOCKS: Dict[str, threading.Lock] = {}
@@ -88,10 +88,12 @@ FAL_NANOBANANA_EDIT = f"{FAL_BASE}/fal-ai/nano-banana-pro/edit"
 FAL_SEEDREAM45_EDIT = f"{FAL_BASE}/fal-ai/bytedance/seedream/v4.5/edit"
 
 # Image-to-Video (img2vid)
-FAL_LTX2_I2V = f"{FAL_BASE}/fal-ai/ltx-2-19b/image-to-video"
+FAL_LTX2_I2V = f"{FAL_BASE}/fal-ai/ltx-2-19b/distilled/image-to-video/lora"
 FAL_KLING_I2V = f"{FAL_BASE}/fal-ai/kling-video/v2.6/pro/image-to-video"
-FAL_VEO31_I2V = f"{FAL_BASE}/fal-ai/veo3.1/image-to-video"
+FAL_VEO31_I2V = f"{FAL_BASE}/fal-ai/veo3.1/fast/image-to-video"
 FAL_WAN_I2V = f"{FAL_BASE}/wan/v2.6/image-to-video"
+FAL_HAILUO_I2V = f"{FAL_BASE}/fal-ai/minimax/hailuo-2.3/pro/image-to-video"
+FAL_KANDINSKY5_I2V = f"{FAL_BASE}/fal-ai/kandinsky5-pro/image-to-video"
 
 # ========= Cost Tracking =========
 API_COSTS = {
@@ -120,10 +122,12 @@ API_COSTS = {
     "fal-ai/seedream45_edit": 0.04,
     "fal-ai/kontext_edit": 0.05,
     # Image-to-Video (estimated Jan 2026 pricing)
-    "fal-ai/ltx-2-19b/image-to-video": 0.10,
+    "fal-ai/ltx-2-19b/distilled/image-to-video/lora": 0.10,
     "fal-ai/kling-video/v2.6/pro/image-to-video": 0.25,
-    "fal-ai/veo3.1/image-to-video": 0.20,
+    "fal-ai/veo3.1/fast/image-to-video": 0.12,
     "wan/v2.6/image-to-video": 0.15,
+    "fal-ai/minimax/hailuo-2.3/pro/image-to-video": 0.18,
+    "fal-ai/kandinsky5-pro/image-to-video": 0.08,
     # LLM
     "claude-sonnet-4-5-20250929": 0.02,
     "claude-3-5-sonnet-latest": 0.015,

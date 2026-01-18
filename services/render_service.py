@@ -178,12 +178,13 @@ def call_txt2img(
 # ========= Image-to-Image =========
 
 def call_img2img_editor(
-    editor_key: str, 
-    prompt: str, 
-    image_urls: List[str], 
+    editor_key: str,
+    prompt: str,
+    image_urls: List[str],
     aspect: str,
     project_id: str = "unknown",
-    state: Optional[Dict[str, Any]] = None
+    state: Optional[Dict[str, Any]] = None,
+    force_single_ref: bool = False,
 ) -> str:
     """
     Generate image from reference images + prompt using FAL img2img.
@@ -196,6 +197,12 @@ def call_img2img_editor(
 
     if not image_urls:
         raise HTTPException(400, "img2img requires at least 1 image_url")
+
+    # Defensive enforcement: if caller requests strict single-ref behavior,
+    # ensure we only process one reference image regardless of input.
+    if force_single_ref and len(image_urls) > 1:
+        print(f"[DEFENSE] force_single_ref enabled: trimming {len(image_urls)} refs to 1")
+        image_urls = image_urls[:1]
     
     # Upload local refs to FAL (convert /files/ paths to fal.media URLs)
     # Uses state cache to avoid re-uploading same refs

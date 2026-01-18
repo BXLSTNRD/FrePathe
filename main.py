@@ -969,11 +969,19 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
     }
 
 @app.post("/api/project/{project_id}/cast/{cast_id}/rerender/{ref_type}")
-def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
-    """v1.4.7: Rerender only ref_a or ref_b."""
+def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str, payload: Dict[str, Any] = None):
+    """v1.4.7: Rerender only ref_a or ref_b.
+
+    Behavior change: if `edit_prompt` is provided in the JSON payload, the server will
+    issue a focused edit using only that prompt (prefixed) and a single reference image.
+    If `edit_prompt` is empty or missing, the endpoint falls back to the original behavior
+    (rebuild prompt from style + cast.prompt_extra and call img2img).
+    """
     if ref_type not in ("a", "b"):
         raise HTTPException(400, "ref_type must be 'a' or 'b'")
-    
+
+    payload = payload or {}
+
     state = load_project(project_id)
     editor = locked_editor_key(state)
     require_key("FAL_KEY", FAL_KEY)
@@ -986,28 +994,58 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
     if not refs:
         raise HTTPException(400, "Cast has no reference image")
 
+    # If client provided an explicit short edit prompt, use it AS-IS (with a short server prefix)
+    edit_prompt = str(payload.get("edit_prompt", "") or "").strip()
+    server_prefix = "Rerender this EXACT SAME image; except: "
+
     style = state["project"]["style_preset"]
     aspect = state["project"]["aspect"]
-    base_style = ", ".join(style_tokens(style) + ["no text", "no watermark", "clean background"])
-    # v1.6.1: Extended negatives - no text/frame/overlay
-    negatives = "no props, no objects, no mug, no cup, no drink, no phone, no bag, no accessories, clean hands, no typography, no title, no caption, no overlay, no frame, no border, no logo"
-    
-    # v1.6.1: Extra prompt has override priority - placed at start of prompt
-    extra = cast.get("prompt_extra", "").strip()
-    extra_prefix = f"{extra}, " if extra else ""
 
-    if ref_type == "a":
-        prompt = f"{base_style}, {extra_prefix}full body, standing, three-quarter view, slight angle, neutral pose, clean background, consistent identity, {negatives}"
+    # CRITICAL CHANGE: select the single canonical reference for this cast/ref_type
+    # Prefer the generated canonical ref from state['cast_matrix']['character_refs'] if present.
+    char_refs = state.get("cast_matrix", {}).get("character_refs", {})
+    ref_entry = None
+    if isinstance(char_refs, dict):
+        ref_entry = char_refs.get(cast_id, {}) or None
+
+    ref_to_use = None
+    if ref_entry and isinstance(ref_entry, dict):
+        ref_key = f"ref_{ref_type}"
+        ref_to_use = ref_entry.get(ref_key)
+
+    # Fallback: use first uploaded reference image (legacy behavior)
+    if not ref_to_use:
+        urls = cast_ref_urls(cast)
+        if not urls:
+            raise HTTPException(400, "Cast has no reference image")
+        ref_to_use = urls[0]
+
+    # Build prompt according to whether an explicit edit_prompt was provided
+    if edit_prompt:
+        # Strict mode: do NOT combine with style tokens or extra prompts.
+        prompt = f"{server_prefix}{edit_prompt}"
     else:
-        prompt = f"{base_style}, {extra_prefix}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
+        # Original behavior: build prompt from style + cast.prompt_extra + negatives
+        base_style = ", ".join(style_tokens(style) + ["no text", "no watermark", "clean background"])
+        negatives = "no props, no objects, no mug, no cup, no drink, no phone, no bag, no accessories, clean hands, no typography, no title, no caption, no overlay, no frame, no border, no logo"
+        extra = cast.get("prompt_extra", "").strip()
+        extra_prefix = f"{extra}, " if extra else ""
 
-    new_url = call_img2img_editor(editor, prompt, [refs[0]], aspect, project_id, state=state)
+        if ref_type == "a":
+            prompt = f"{base_style}, {extra_prefix}full body, standing, three-quarter view, slight angle, neutral pose, clean background, consistent identity, {negatives}"
+        else:
+            prompt = f"{base_style}, {extra_prefix}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
+
+    # Call the editor using only the single reference image (the canonical ref when available)
+    # Defensive: force_single_ref ensures no extra references are sent to FAL.
+    print(f"[INFO] Single-ref rerender: cast={cast_id} ref_type={ref_type} ref_to_use={ref_to_use} edit_prompt_present={bool(edit_prompt)}")
+    new_url = call_img2img_editor(editor, prompt, [ref_to_use], aspect, project_id, state=state, force_single_ref=True)
     track_cost(f"fal-ai/{editor}", 1, state=state, note=f"cast_ref_{ref_type}")
-    
+
     # v1.5.9.1: Store with friendly name in project folder
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)
     local_path = download_image_locally(new_url, project_id, f"cast_{cast_id}_ref_{ref_type}", state=state, friendly_name=f"Cast_{cast_name}_Ref{ref_type.upper()}")
-    
+
     # v1.6.5: Thread-safe save with lock
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
@@ -1023,7 +1061,7 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str):
 
         save_project(fresh_state)
 
-    return {"cast_id": cast_id, "ref_type": ref_type, "url": local_path}   
+    return {"cast_id": cast_id, "ref_type": ref_type, "url": local_path}
 
 # v1.5.3: Upload ref image directly from file
 @app.post("/api/project/{project_id}/cast/{cast_id}/ref/{ref_type}")

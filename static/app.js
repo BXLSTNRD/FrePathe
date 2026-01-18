@@ -65,9 +65,10 @@ function cacheBust(url) {
     const sep = url.includes('?') ? '&' : '?';
     finalUrl = `${url}${sep}t=${Date.now()}`;
   }
-  // If URL is already /renders/ path, use as-is (already local - NO cache bust)
-  else if (url.startsWith('/renders/')) {
-    finalUrl = url;
+  // If URL is a local project file (/files/ or /renders/), add cache-bust to force reload
+  else if (url.startsWith('/files/') || url.startsWith('/renders/')) {
+    const sep = url.includes('?') ? '&' : '?';
+    finalUrl = `${url}${sep}t=${Date.now()}`;
   }
   // Otherwise assume it's a filename and try local first
   else {
@@ -797,11 +798,36 @@ async function updateLyrics() {
 
 function showImagePopup(src) {
   if (!src) return;
-  document.getElementById("popupImage").src = src;
+  // Use cache-busted URL so overwritten files reload in the popup
+  try {
+    document.getElementById("popupImage").src = cacheBust(src);
+  } catch (e) {
+    document.getElementById("popupImage").src = src;
+  }
   document.getElementById("imagePopup").classList.remove("hidden");
 }
 
 function hidePopup(id) {
+  // If hiding the image popup, invalidate the IMAGE_CACHE entry for the popup image
+  if (id === "imagePopup") {
+    try {
+      const popupImg = document.getElementById("popupImage");
+      if (popupImg) {
+        const src = popupImg.src || "";
+        const srcNoQuery = src.split('?')[0];
+        // Delete any cache entries whose value matches the popup src (without query)
+        for (const [key, val] of IMAGE_CACHE.entries()) {
+          if ((val || "").split('?')[0] === srcNoQuery) {
+            IMAGE_CACHE.delete(key);
+          }
+        }
+        // Clear the popup image src to free memory
+        popupImg.src = "";
+      }
+    } catch (e) {
+      console.warn("Failed to invalidate IMAGE_CACHE on popup hide:", e);
+    }
+  }
   document.getElementById(id).classList.add("hidden");
 }
 
@@ -1099,7 +1125,9 @@ function renderCastList(state) {
       const role = c.role || defaultRole;
       const impact = c.impact ?? defaultImpacts[role];
       const promptExtra = c.prompt_extra || "";
-      const hasRefs = refs.ref_a && refs.ref_b;
+      // Consider refs available if canonical character refs exist OR the cast has uploaded reference images
+      const hasUploadedRefs = (c.reference_images && c.reference_images.length > 0);
+      const hasRefs = (refs.ref_a && refs.ref_b) || hasUploadedRefs;
       
       html += `
         <div class="cast-card" data-cast-id="${c.cast_id}">
@@ -1392,13 +1420,39 @@ async function updateCastPrompt(castId, promptExtra) {
 async function rerenderSingleRef(castId, refType) {
   try {
     setStatus(`Regenerating ref ${refType.toUpperCase()}…`, null, "castStatus");
-    await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/${refType}`, { method: "POST" });
-    setStatus(`Ref ${refType.toUpperCase()} regenerated`, 100, "castStatus");
-    
-    // v1.7.0: Update only this cast card, not entire list
-    const freshState = await apiCall(`/api/project/${pid()}`);
-    PROJECT_STATE = freshState;
-    updateCastCardRefs(castId, freshState);
+    // Read the in-UI extra prompt for this cast card (if present)
+    const promptEl = document.querySelector(`.cast-card[data-cast-id="${castId}"] .cast-prompt`);
+    const editPrompt = promptEl ? promptEl.value.trim() : "";
+
+    const resp = await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/${refType}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ edit_prompt: editPrompt })
+    });
+
+    // If the endpoint returned the updated local URL, update UI state and the single cast card immediately
+    if (resp && resp.url) {
+      setStatus(`Ref ${refType.toUpperCase()} regenerated`, 100, "castStatus");
+
+      // Ensure PROJECT_STATE has cast_matrix.character_refs structure
+      PROJECT_STATE = PROJECT_STATE || {};
+      PROJECT_STATE.cast_matrix = PROJECT_STATE.cast_matrix || {};
+      PROJECT_STATE.cast_matrix.character_refs = PROJECT_STATE.cast_matrix.character_refs || {};
+      const charRefs = PROJECT_STATE.cast_matrix.character_refs[castId] || {};
+      charRefs[`ref_${refType}`] = resp.url;
+      PROJECT_STATE.cast_matrix.character_refs[castId] = charRefs;
+
+      // Update only this cast card UI
+      // Invalidate any cached mapping for this URL so cacheBust returns a fresh timestamp
+      try { IMAGE_CACHE.delete(resp.url); } catch (e) {}
+      updateCastCardRefs(castId, charRefs);
+    } else {
+      // Fallback: refresh entire project state
+      setStatus(`Ref ${refType.toUpperCase()} regenerated`, 100, "castStatus");
+      const freshState = await apiCall(`/api/project/${pid()}`);
+      PROJECT_STATE = freshState;
+      updateCastCardRefs(castId, freshState);
+    }
   } catch (e) {
     showError(e.message);
   }

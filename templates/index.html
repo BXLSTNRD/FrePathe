@@ -2,7 +2,7 @@
 <html><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Fré Pathé VIDEO TOOLS 1.8.1</title>
+<title>Fré Pathé VIDEO TOOLS 1.8.2</title>
 <link rel="stylesheet" href="/static/style.css"></head>
 <body>
 
@@ -14,7 +14,7 @@
   <div class="logo-wrap">
     <img src="/static/logo.png" alt="Fré Pathé" class="logo-img"/>
   </div>
-  <span class="version">v1.8.1</span>
+  <span class="version">v1.8.2</span>
 </header>
 
 <!-- PROJECT -->
@@ -230,7 +230,7 @@
         <button class="small" onclick="refreshFromServer()" title="Refresh from server">⟳</button>
         <button class="accent-btn" onclick="renderAllShots()" id="renderAllShotsBtn">RENDER ALL</button>
         <button class="stop-btn hidden" onclick="stopRenderQueue()" id="stopRenderBtn" title="Stop rendering">STOP</button>
-        <input type="text" id="negativePromptInput" placeholder="Negative prompt..." class="negative-prompt-input" title="Override negative prompt for all renders"/>
+        <input type="text" id="negativePromptInput" placeholder="MASTER prompt..." class="negative-prompt-input" title="MASTER prompt appended in CAPS to all shot renders"/>
       </div>
     </div>
     <div id="shotsGrid" class="shots-grid"></div>

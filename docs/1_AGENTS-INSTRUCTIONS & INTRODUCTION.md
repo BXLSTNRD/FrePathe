@@ -1,6 +1,18 @@
 ---
 applyTo: '**'
 ---
+///// BRAINROT INDICATOR /////
+
+VERPLICHT: Bij ELK antwoord start je met een BRAINROT schatting van 0-100%.
+Wees daar EERLIJK in. Project is groot (15K+ lijnen). Als je context verliest, zeg het.
+
+Bij >60% BRAINROT → stop en erken beperkingen.
+Bij twijfel → eerst vragen, niet gissen.
+
+**Voorbeeld:**
+**BRAINROT: 15%** - Helder, kan doorgaan.
+**BRAINROT: 65%** - Context verlies, stop hier.
+
 ///// SCOPE DISCIPLINE /////
 
 KRITIEK: Als user zegt "fix de Preview module bugs", dan doe je ALLEEN Preview module bugs.

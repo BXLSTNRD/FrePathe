@@ -20,7 +20,7 @@ from services.config import (
     FAL_SEEDREAM45, FAL_SEEDREAM45_EDIT,
     FAL_FLUX2, FAL_FLUX2_EDIT,
     API_COSTS, MODEL_TO_ENDPOINT, SESSION_COST, PRICING_LOADED,
-    RENDER_SEMAPHORE, EXPORT_STATUS,
+    RENDER_SEMAPHORE, VIDEO_SEMAPHORE, EXPORT_STATUS,
     require_key, fal_headers, now_iso, clamp, safe_float,
     retry_on_502, track_cost, fetch_live_pricing, log_llm_call,
     locked_render_models, locked_editor_key, locked_model_key,
@@ -2338,9 +2338,9 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
     state = load_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
-    # v1.6.5: Get optional negative prompt override
+    # v1.8.2: Get optional MASTER prompt (appended in CAPS)
     payload = payload or {}
-    negative_prompt_override = payload.get("negative_prompt", "").strip()
+    master_prompt = payload.get("master_prompt", "").strip()
 
     shots = state.get("storyboard", {}).get("shots", [])
     shot = next((s for s in shots if s.get("shot_id")==shot_id), None)
@@ -2351,10 +2351,10 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
     aspect = state["project"]["aspect"]
     print(f"[INFO] Rendering shot {shot_id}: aspect={aspect}")
 
-    # v1.6.5: Apply negative prompt override if provided
-    if negative_prompt_override:
-        prompt = f"{prompt}, {negative_prompt_override}"
-        print(f"[INFO] Using negative prompt override: {negative_prompt_override[:50]}...")
+    # v1.8.2: Append MASTER prompt in UPPERCASE if provided
+    if master_prompt:
+        prompt = f"{prompt}, {master_prompt.upper()}"
+        print(f"[INFO] Using MASTER prompt: {master_prompt.upper()[:50]}...")
     
     # v1.7.1: Wardrobe cascade: shot.wardrobe[cast_id] > scene.wardrobe > cast.prompt_extra
     cast_ids = shot.get("cast") or []
@@ -2627,8 +2627,16 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
         else:
             image_refs.append(ref_image)
     
+    # v1.8.2: Get optional MASTER prompt for edits
+    master_prompt = payload.get("master_prompt", "").strip()
+    
     # v1.8.1.3: img2img with rerender prefix
     full_prompt = f"Rerender this exact same image except {edit_prompt}" if edit_prompt else "Rerender this exact same image, enhance quality"
+    
+    # v1.8.2: Append MASTER prompt in UPPERCASE if provided
+    if master_prompt:
+        full_prompt = f"{full_prompt}, {master_prompt.upper()}"
+        print(f"[INFO] Shot edit with MASTER prompt: {master_prompt.upper()[:50]}...")
     
     # Call img2img
     editor = locked_editor_key(state)
@@ -2690,12 +2698,16 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
         fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
         
         save_project(fresh_state)
-
+    
+    # v1.8.2: Return version info from fresh_shot (not old render_obj)
+    fresh_shot = next((s for s in fresh_state.get("storyboard", {}).get("shots", []) if s.get("shot_id") == shot_id), None)
+    fresh_render = fresh_shot.get("render", {}) if fresh_shot else {}
+    
     return {
         "shot_id": shot_id,
         "image_url": img_url,
-        "edit_count": len(render_obj.get("edits", [])),
-        "selected_index": render_obj.get("selected_index", -1)
+        "edit_count": len(fresh_render.get("edits", [])),
+        "selected_index": fresh_render.get("selected_index", -1)
     }
 
 
@@ -3066,9 +3078,9 @@ def api_generate_shot_video(project_id: str, payload: Dict[str, Any]):
 
 
 @app.post("/api/project/{project_id}/video/generate-batch")
-def api_generate_batch_videos(project_id: str, payload: Dict[str, Any]):
+async def api_generate_batch_videos(project_id: str, payload: Dict[str, Any]):
     """
-    v1.8.0: Generate videos for multiple shots using img2vid AI.
+    v1.8.2: Generate videos for multiple shots using img2vid AI with async concurrency (max 8 parallel).
     
     Payload:
         shot_ids: List[str] (optional) - Specific shot IDs (None = all rendered shots)
@@ -3082,7 +3094,7 @@ def api_generate_batch_videos(project_id: str, payload: Dict[str, Any]):
         video_model = payload.get("video_model")
         
         try:
-            results = generate_videos_for_shots(state, shot_ids, video_model)
+            results = await generate_videos_for_shots(state, shot_ids, video_model)
             save_project(state)
             
             return {

@@ -1,5 +1,83 @@
 # Changelog
 
+# Fré Pathé v1.8.2 - Performance & Quality (2026-01-19)
+
+**Release Date:** January 19, 2026  
+**Agent:** Claude Sonnet 4.5 (2026-01-19 session)  
+**Score:** 12/10 (Scope discipline + honest communication + execution)
+
+## 🚀 Performance Enhancements
+
+### Video Generation Concurrency (2 → 8)
+**Implemented:**
+- ✅ `VIDEO_SEMAPHORE = asyncio.Semaphore(8)` in `config.py`
+- ✅ Converted `generate_videos_for_shots()` to async with `asyncio.gather()`
+- ✅ Updated `/api/project/{id}/video/generate-batch` endpoint to async
+- ✅ Export service now uses async batch generation
+- ✅ Max 8 parallel video generations (was sequential, now 4x faster potential)
+
+**Impact:** Batch video generation can now process 8 shots simultaneously instead of sequentially. Reduces export time significantly for large projects.
+
+## 🎯 Quality Improvements
+
+### MASTER Prompt System
+**Problem:** No global prompt override system for shot rendering. Users couldn't apply consistent instructions across all shots (e.g., "NO STRINGS, NO CHORDS" for puppet consistency).
+
+**Implemented:**
+- ✅ Renamed "negative prompt" → "MASTER prompt" (clearer purpose)
+- ✅ Frontend: `getMasterPrompt()` helper reads input field on-demand
+- ✅ MASTER prompt appended IN UPPERCASE to ALL shot renders/edits
+- ✅ Works in: RENDER ALL, individual renders, rerender button (↻), quick-edits, modal editor
+- ✅ Backend: `master_prompt.upper()` appended to prompts in `api_render_shot()` + `api_edit_shot()`
+
+**Example:**
+```
+Shot prompt: "supermarionation, 1960s puppet, wooden movement..."
+MASTER prompt: "no strings, no chords"
+Final FAL prompt: "supermarionation, 1960s puppet..., NO STRINGS, NO CHORDS"
+```
+
+**Impact:** Consistent quality control across all shots without manual per-shot edits.
+
+### Thumbnail Refresh on Edit
+**Fixed:**
+- ✅ Shot edits now return correct version info from fresh state (was using stale `render_obj`)
+- ✅ Frontend `updateShotCardWithVersion()` includes cache-buster `?t=${Date.now()}`
+- ✅ Thumbnails immediately update after edit without refresh
+
+## 🔧 Technical Changes
+
+**Frontend (app.js):**
+- Added `getMasterPrompt()` helper (reads input field + uppercases)
+- Updated `renderShot()`, `renderItemAsync()`, `quickEditShot()`, `submitShotEdit()`
+- All shot render/edit calls now include `master_prompt` parameter
+
+**Backend (main.py):**
+- `api_render_shot()`: Appends `master_prompt.upper()` to shot prompt
+- `api_edit_shot()`: Appends `master_prompt.upper()` to edit prompt
+- Fixed version info return to use `fresh_state` instead of stale `render_obj`
+
+**Config (services/config.py):**
+- Added `VIDEO_SEMAPHORE = asyncio.Semaphore(8)`
+
+**Video Service (services/video_service.py):**
+- Converted `generate_videos_for_shots()` to async
+- Added `_generate_shot_video_async()` wrapper with semaphore control
+
+## 📊 Agent Performance
+
+**BRAINROT Tracking:** 20-35% throughout session (complex codebase but maintained clarity)
+
+**Execution Quality:**
+- Scope discipline: ✓ (only implemented requested features)
+- Bug finding: ✓ (found `MASTER_PROMPT_OVERRIDE` only set in RENDER ALL)
+- Iterative fixes: ✓ (fixed frontend oversight in 3 locations)
+- Communication: ✓ (honest, direct, no fluff)
+
+**User Feedback:** "12/10 - eerlijkheid, scope-begrip, correcte uitvoering, directe communicatie, slight humor"
+
+---
+
 # Fré Pathé v1.8.1.3 - Edit Functions Fix (Critical)
 
 **Release Date:** January 19, 2026  

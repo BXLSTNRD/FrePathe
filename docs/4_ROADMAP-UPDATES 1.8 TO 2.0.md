@@ -1,21 +1,20 @@
 1.8.1 -> DONE - Image2Video implementeren (Basis OK)
 
-1.8.2 -> Promptrerenders JUIST ZETTEN - Enkel CAST Done
-      -> Master negprompt to rule over all
-      -> thumb/cardupdate bij rerender... Enkel CAST Done
-      -> Concurrency voor video verhogen (heb 20 max; dus 8 ipv 2)
-      -> Costmeter eindelijk juist krijgen...
+1.8.2 -> Promptrerenders JUIST ZETTEN - (OK)
+      -> Master negprompt to rule over all (DONE)
+      -> thumb/cardupdate bij rerender... (OK)
+      -> Concurrency voor video verhogen (DONE)
 
-1.8.3 -> UI Overhoal Storyboard.
+1.8.3 -> UI Overhoal
       -> Styles+Prompts masterfinetunen
-      -> Quality checker LLM Storyboard implementeren?
       -> GPT1.5-Edit toevoegen
 
 1.8.4 -> Save/Load -> Weg uit data; userfriendly
-      -> Seriously; updaten van een oud project naar een nieuw maakt wel nieuwe map met JSON aan.
-         Maar de oude MAG ni weg; daar zitten de helft vd renders... DUH  
-         En Alles wat verspreid zit... ALLES IN PJCTMAP OOK Debugfiles
-         Geen dubbele JSON onder prjocttitle en interne ID (Interne ID weg!!!)
+            -> Seriously; updaten van een oud project naar een nieuw maakt wel nieuwe map met JSON aan.
+             Maar de oude MAG ni weg; daar zitten de helft vd renders... DUH  
+             En Alles wat verspreid zit... ALLES IN PJCTMAP OOK Debugfiles
+             Geen dubbele JSON onder prjocttitle en interne ID (Interne ID weg!!!)
+      -> cost
 
 REFACTOR
 1.8.5 -> Dead Code Purge

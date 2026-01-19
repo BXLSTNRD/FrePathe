@@ -2691,7 +2691,15 @@ async function renderShot(shotId) {
       return;
     }
 
-    await apiCall(`/api/project/${pid()}/shot/${shotId}/render`, { method: "POST" });
+    // v1.8.2: Include MASTER prompt if set
+    const masterPrompt = getMasterPrompt();
+    const options = { method: "POST" };
+    if (masterPrompt) {
+      options.headers = { "Content-Type": "application/json" };
+      options.body = JSON.stringify({ master_prompt: masterPrompt });
+    }
+
+    await apiCall(`/api/project/${pid()}/shot/${shotId}/render`, options);
 
     if (!RENDER_STOPPED) {
       setStatus("Shot rendered", 100, "storyboardStatus");
@@ -2756,7 +2764,8 @@ async function quickEditShot(shotId, editPrompt) {
       body: JSON.stringify({
         edit_prompt: editPrompt.trim(),
         extra_cast: [],
-        ref_image: refImg
+        ref_image: refImg,
+        master_prompt: getMasterPrompt()  // v1.8.2: Include MASTER prompt in CAPS
       })
     });
     
@@ -2945,7 +2954,8 @@ async function submitShotEdit() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         edit_prompt: editPrompt,
-        extra_cast: extraCast
+        extra_cast: extraCast,
+        master_prompt: getMasterPrompt()  // v1.8.2: Include MASTER prompt in CAPS
       })
     });
     
@@ -2959,8 +2969,14 @@ async function submitShotEdit() {
 
 // v1.6.5: Flag to stop render queue
 let RENDER_STOPPED = false;
-// v1.6.5: Global negative prompt override
-let NEGATIVE_PROMPT_OVERRIDE = "";
+// v1.8.2: Global MASTER prompt (appended in CAPS to all shot renders)
+let MASTER_PROMPT_OVERRIDE = "";
+
+// v1.8.2: Helper to get current MASTER prompt value
+function getMasterPrompt() {
+  const input = document.getElementById("negativePromptInput");
+  return input?.value?.trim()?.toUpperCase() || "";
+}
 
 async function renderAllShots() {
   try {
@@ -2986,9 +3002,9 @@ async function renderAllShots() {
       console.warn("[PREWARM] Failed, continuing anyway:", e);
     }
 
-    // v1.6.5: Get negative prompt override if provided
+    // v1.8.2: Get MASTER prompt override if provided
     const negPromptInput = document.getElementById("negativePromptInput");
-    NEGATIVE_PROMPT_OVERRIDE = negPromptInput?.value?.trim() || "";
+    MASTER_PROMPT_OVERRIDE = negPromptInput?.value?.trim() || "";
 
     // v1.5.4: Track total for progress
     TOTAL_QUEUED = shotsToRender.length;
@@ -3070,7 +3086,7 @@ async function processRenderQueue() {
     setStatus(`Rendered ${COMPLETED_COUNT} items`, 100, "storyboardStatus");
     TOTAL_QUEUED = 0;
     COMPLETED_COUNT = 0;
-    NEGATIVE_PROMPT_OVERRIDE = "";
+    MASTER_PROMPT_OVERRIDE = "";
     RENDER_STOPPED = false;  // v1.6.5: Reset flag for next batch
 
     // v1.6.5: Use helper to hide stop button
@@ -3084,11 +3100,12 @@ async function processRenderQueue() {
 async function renderItemAsync(item) {
   try {
     if (item.type === "shot") {
-      // v1.6.5: Include negative prompt override if set
+      // v1.8.2: Include MASTER prompt override in CAPS if set
       const options = { method: "POST" };
-      if (NEGATIVE_PROMPT_OVERRIDE) {
+      const masterPrompt = getMasterPrompt();
+      if (masterPrompt) {
         options.headers = { "Content-Type": "application/json" };
-        options.body = JSON.stringify({ negative_prompt: NEGATIVE_PROMPT_OVERRIDE });
+        options.body = JSON.stringify({ master_prompt: masterPrompt });
       }
       const result = await apiCall(`/api/project/${pid()}/shot/${item.id}/render`, options);
       // v1.5.3: Update shot card with rendered image

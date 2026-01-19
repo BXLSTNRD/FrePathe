@@ -384,39 +384,37 @@ def export_video_with_img2vid(
     output_path = video_dir / f"{project_title}_img2vid_export.mp4"
     
     try:
-        # Step 1: Generate video for each shot using img2vid
+        # Step 1: Generate video for each shot using img2vid (v1.8.2: async batch)
         video_clips = []
         skipped = []
         total_shots = len(rendered_shots)
         generation_start = time.time()
         
-        print(f"[IMG2VID] Processing {total_shots} shots with {video_model}...")
+        print(f"[IMG2VID] Processing {total_shots} shots with {video_model} (concurrency=8)...")
         update_export_status(project_id, "processing", 0, total_shots, f"Generating videos with {video_model}...")
         
+        # Generate all videos concurrently
+        from .video_service import generate_videos_for_shots
+        import asyncio
+        
+        shot_ids_to_generate = [s.get("shot_id") for s in rendered_shots if not s.get("render", {}).get("video", {}).get("video_url")]
+        
+        if shot_ids_to_generate:
+            print(f"[IMG2VID] Generating {len(shot_ids_to_generate)} new videos...")
+            batch_results = asyncio.run(generate_videos_for_shots(state, shot_ids_to_generate, video_model))
+            print(f"[IMG2VID] Batch complete: {batch_results['success']} success, {batch_results['failed']} failed, {batch_results['skipped']} skipped")
+        
+        # Now collect all video clips
         for i, shot in enumerate(rendered_shots):
             shot_id = shot.get("shot_id", f"shot_{i}")
             
             try:
-                # Check if shot already has video
-                if shot.get("render", {}).get("video", {}).get("video_url"):
-                    video_url = shot["render"]["video"]["video_url"]
-                    print(f"[IMG2VID] Using existing video for {shot_id}")
-                else:
-                    # Generate video
-                    print(f"[IMG2VID] Generating video for {shot_id}...")
-                    updated_shot = generate_shot_video(
-                        state=state,
-                        shot=shot,
-                        video_model=video_model,
-                        download_locally=True,
-                    )
-                    video_url = updated_shot["render"]["video"]["video_url"]
-                    
-                    # Update shot in state
-                    for idx, s in enumerate(shots):
-                        if s.get("shot_id") == shot_id:
-                            shots[idx] = updated_shot
-                            break
+                # All shots should now have video (either existing or just generated)
+                video_url = shot.get("render", {}).get("video", {}).get("video_url")
+                if not video_url:
+                    raise Exception(f"No video URL for {shot_id}")
+                
+                print(f"[IMG2VID] Collecting video for {shot_id}")
                 
                 # Resolve to local path - handle both /files/ URLs and absolute paths
                 if video_url.startswith("/files/"):

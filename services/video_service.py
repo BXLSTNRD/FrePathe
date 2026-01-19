@@ -435,13 +435,43 @@ def build_shot_motion_prompt(shot: Dict[str, Any]) -> str:
 
 # ========= Batch Video Generation =========
 
-def generate_videos_for_shots(
+async def _generate_shot_video_async(
+    state: Dict[str, Any],
+    shot: Dict[str, Any],
+    video_model: str,
+    semaphore: Any,
+) -> tuple[str, bool, Optional[str]]:
+    """
+    Generate video for a single shot with semaphore control.
+    
+    Returns:
+        (shot_id, success, error_msg)
+    """
+    from .config import VIDEO_SEMAPHORE
+    
+    shot_id = shot.get("shot_id", "unknown")
+    
+    async with semaphore:
+        try:
+            # Run sync function in thread pool
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, generate_shot_video, state, shot, video_model)
+            print(f"[VIDEO] Generated video for {shot_id}")
+            return (shot_id, True, None)
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[VIDEO] Failed {shot_id}: {error_msg}")
+            return (shot_id, False, error_msg)
+
+
+async def generate_videos_for_shots(
     state: Dict[str, Any],
     shot_ids: Optional[List[str]] = None,
     video_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Generate videos for multiple shots.
+    v1.8.2: Generate videos for multiple shots with async concurrency (max 8 parallel).
     
     Args:
         state: Project state
@@ -457,6 +487,9 @@ def generate_videos_for_shots(
             "errors": {...}
         }
     """
+    import asyncio
+    from .config import VIDEO_SEMAPHORE
+    
     # Get video model from project or default
     if not video_model:
         video_model = state.get("project", {}).get("video_model", DEFAULT_VIDEO_MODEL)
@@ -471,31 +504,44 @@ def generate_videos_for_shots(
         # All rendered shots
         shots = [s for s in all_shots if s.get("render", {}).get("image_url")]
     
+    # Separate shots that need generation vs already have video
+    to_generate = []
+    skipped_count = 0
+    
+    for shot in shots:
+        shot_id = shot.get("shot_id", "unknown")
+        if shot.get("render", {}).get("video", {}).get("video_url"):
+            print(f"[VIDEO] Skipping {shot_id} - already has video")
+            skipped_count += 1
+        else:
+            to_generate.append(shot)
+    
     results = {
         "success": 0,
         "failed": 0,
-        "skipped": 0,
+        "skipped": skipped_count,
         "total": len(shots),
         "errors": {},
     }
     
-    for shot in shots:
-        shot_id = shot.get("shot_id", "unknown")
+    # Generate videos concurrently (max 8 parallel)
+    if to_generate:
+        print(f"[VIDEO] Generating {len(to_generate)} videos with concurrency=8...")
+        tasks = [
+            _generate_shot_video_async(state, shot, video_model, VIDEO_SEMAPHORE)
+            for shot in to_generate
+        ]
         
-        # Skip if already has video
-        if shot.get("render", {}).get("video", {}).get("video_url"):
-            print(f"[VIDEO] Skipping {shot_id} - already has video")
-            results["skipped"] += 1
-            continue
+        # Execute all tasks concurrently
+        task_results = await asyncio.gather(*tasks, return_exceptions=False)
         
-        try:
-            generate_shot_video(state, shot, video_model)
-            results["success"] += 1
-            print(f"[VIDEO] Generated video for {shot_id}")
-        except Exception as e:
-            results["failed"] += 1
-            results["errors"][shot_id] = str(e)
-            print(f"[VIDEO] Failed {shot_id}: {str(e)}")
+        # Process results
+        for shot_id, success, error_msg in task_results:
+            if success:
+                results["success"] += 1
+            else:
+                results["failed"] += 1
+                results["errors"][shot_id] = error_msg
     
     return results
 

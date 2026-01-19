@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 # ========= Version =========
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 
 # ========= Threading Locks =========
 PROJECT_LOCKS: Dict[str, threading.Lock] = {}
@@ -160,6 +160,7 @@ PRICING_LOADED = False
 
 # ========= Render Concurrency =========
 RENDER_SEMAPHORE = asyncio.Semaphore(6)
+VIDEO_SEMAPHORE = asyncio.Semaphore(8)  # v1.8.2: Video generation concurrency (max 20, using 8)
 
 # ========= Model Aliases =========
 FAL_NANOBANANA = FAL_NANOBANANA_PRO_T2I

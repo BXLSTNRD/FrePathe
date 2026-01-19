@@ -1761,37 +1761,219 @@ async function rerenderScene(sceneId) {
 }
 
 // v1.5.4: Edit scene with custom prompt (img2img on current scene image)
-async function editSceneWithPrompt(sceneId, editPrompt) {
+// v1.8.1.2: Decor 1 (Main) edit with img2img
+async function editSceneDecor1(sceneId, editPrompt) {
   if (!editPrompt?.trim()) {
     showError("Enter an edit prompt");
     return;
   }
   
-  // v1.6.3: Check if decor is locked
   const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
   if (scene?.decor_locked) {
     showError("Scene decor is locked. Unlock to edit.");
     return;
   }
   
+  // Disable controls during render
+  const input = document.getElementById("sceneDecor1Prompt");
+  const refBtn = document.getElementById("sceneDecor1RefBtn");
+  const goBtn = document.getElementById("sceneDecor1Go");
+  const lockBtn = document.getElementById("sceneDecor1Lock");
+  
+  if (input) input.disabled = true;
+  if (refBtn) refBtn.disabled = true;
+  if (goBtn) goBtn.disabled = true;
+  if (lockBtn) lockBtn.disabled = true;
+  
   try {
-    setStatus(`Editing scene…`, null, "storyboardStatus");
+    setStatus(`Editing decor 1…`, null, "storyboardStatus");
+    
+    // Check for selected reference image (via + button)
+    const refKey = `${sceneId}_decor1`;
+    const refUrl = window.SCENE_REF_SELECTED?.[refKey];
+    
+    const payload = { edit_prompt: editPrompt.trim() };
+    if (refUrl) payload.ref_image = refUrl;
+    
     const result = await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/edit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ edit_prompt: editPrompt.trim() })
+      body: JSON.stringify(payload)
     });
-    setStatus("Scene edited", 100, "storyboardStatus");
-    // Clear the popup input
-    const input = document.getElementById("sceneRepromptInput");
+    setStatus("Decor 1 edited", 100, "storyboardStatus");
+    
+    // Clear input after edit
+    const input = document.getElementById("sceneDecor1Prompt");
     if (input) input.value = "";
-    // v1.7.1: Use targeted update like shots (no extra API call)
+    
+    // Clear ref button visual
+    const refBtn = document.getElementById("sceneDecor1RefBtn");
+    if (refBtn) {
+      refBtn.textContent = "+";
+      refBtn.title = "Add reference";
+    }
+    window.SCENE_REF_SELECTED = window.SCENE_REF_SELECTED || {};
+    delete window.SCENE_REF_SELECTED[`${sceneId}_decor1`];
+    
+    // Targeted update: timeline card + popup
     if (result?.image_url) {
       updateSceneCardImage(sceneId, result.image_url);
-      // Popup auto-updates via updateSceneCardImage
+      updateScenePopupDecor1(sceneId, result.image_url);
     }
   } catch (e) {
     showError(e.message);
+  } finally {
+    // Re-enable controls
+    const input = document.getElementById("sceneDecor1Prompt");
+    const refBtn = document.getElementById("sceneDecor1RefBtn");
+    const goBtn = document.getElementById("sceneDecor1Go");
+    const lockBtn = document.getElementById("sceneDecor1Lock");
+    
+    if (input) input.disabled = false;
+    if (refBtn) refBtn.disabled = false;
+    if (goBtn) goBtn.disabled = false;
+    if (lockBtn) lockBtn.disabled = false;
+  }
+}
+
+// v1.8.1.2: Decor 2 (Alt) edit with img2img
+async function editSceneDecor2(sceneId, editPrompt) {
+  if (!editPrompt?.trim()) {
+    showError("Enter an edit prompt");
+    return;
+  }
+  
+  // Disable controls during render
+  const input = document.getElementById("sceneDecor2Prompt");
+  const refBtn = document.getElementById("sceneDecor2RefBtn");
+  const goBtn = document.getElementById("sceneDecor2Go");
+  
+  if (input) input.disabled = true;
+  if (refBtn) refBtn.disabled = true;
+  if (goBtn) goBtn.disabled = true;
+  
+  try {
+    setStatus(`Editing decor 2…`, null, "storyboardStatus");
+    
+    // Check for selected reference image (via + button)
+    const refKey = `${sceneId}_decor2`;
+    const refUrl = window.SCENE_REF_SELECTED?.[refKey];
+    
+    const payload = { edit_prompt: editPrompt.trim() };
+    if (refUrl) payload.ref_image = refUrl;
+    
+    const result = await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/edit_decor_alt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    setStatus("Decor 2 edited", 100, "storyboardStatus");
+    
+    // Clear input after edit
+    const input = document.getElementById("sceneDecor2Prompt");
+    if (input) input.value = "";
+    
+    // Clear ref button visual
+    const refBtn = document.getElementById("sceneDecor2RefBtn");
+    if (refBtn) {
+      refBtn.textContent = "+";
+      refBtn.title = "Add reference";
+    }
+    window.SCENE_REF_SELECTED = window.SCENE_REF_SELECTED || {};
+    delete window.SCENE_REF_SELECTED[`${sceneId}_decor2`];
+    
+    // Update PROJECT_STATE and popup only (not in timeline)
+    if (result?.decor_alt) {
+      const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
+      if (scene) scene.decor_alt = result.decor_alt;
+      updateScenePopupDecorAlt(sceneId, result.decor_alt);
+    }
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    // Re-enable controls
+    const input = document.getElementById("sceneDecor2Prompt");
+    const refBtn = document.getElementById("sceneDecor2RefBtn");
+    const goBtn = document.getElementById("sceneDecor2Go");
+    
+    if (input) input.disabled = false;
+    if (refBtn) refBtn.disabled = false;
+    if (goBtn) goBtn.disabled = false;
+  }
+}
+
+// v1.8.1.2: Wardrobe edit with img2img
+async function editSceneWardrobe(sceneId, editPrompt) {
+  if (!editPrompt?.trim()) {
+    showError("Enter wardrobe description");
+    return;
+  }
+  
+  const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
+  if (scene?.wardrobe_locked) {
+    showError("Scene wardrobe is locked. Unlock to edit.");
+    return;
+  }
+  
+  // Disable controls during render
+  const input = document.getElementById("sceneWardrobeInput");
+  const refBtn = document.getElementById("sceneWardrobeRefBtn");
+  const goBtn = document.getElementById("sceneWardrobeGo");
+  const lockBtn = document.getElementById("sceneWardrobeLock");
+  
+  if (input) input.disabled = true;
+  if (refBtn) refBtn.disabled = true;
+  if (goBtn) goBtn.disabled = true;
+  if (lockBtn) lockBtn.disabled = true;
+  
+  try {
+    setStatus(`Editing wardrobe…`, null, "storyboardStatus");
+    
+    // Check for selected reference image (via + button)
+    const refKey = `${sceneId}_wardrobe`;
+    const refUrl = window.SCENE_REF_SELECTED?.[refKey];
+    
+    const payload = { edit_prompt: editPrompt.trim() };
+    if (refUrl) payload.ref_image = refUrl;
+    
+    const result = await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/edit_wardrobe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    setStatus("Wardrobe edited", 100, "storyboardStatus");
+    
+    // Clear input after edit
+    const input = document.getElementById("sceneWardrobeInput");
+    if (input) input.value = "";
+    
+    // Clear ref button visual
+    const refBtn = document.getElementById("sceneWardrobeRefBtn");
+    if (refBtn) {
+      refBtn.textContent = "+";
+      refBtn.title = "Add cast ref";
+    }
+    window.SCENE_REF_SELECTED = window.SCENE_REF_SELECTED || {};
+    delete window.SCENE_REF_SELECTED[`${sceneId}_wardrobe`];
+    
+    // Update PROJECT_STATE and popup
+    if (result?.wardrobe_ref) {
+      if (scene) scene.wardrobe_ref = result.wardrobe_ref;
+      updateScenePopupWardrobe(sceneId, result.wardrobe_ref);
+    }
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    // Re-enable controls
+    const input = document.getElementById("sceneWardrobeInput");
+    const refBtn = document.getElementById("sceneWardrobeRefBtn");
+    const goBtn = document.getElementById("sceneWardrobeGo");
+    const lockBtn = document.getElementById("sceneWardrobeLock");
+    
+    if (input) input.disabled = false;
+    if (refBtn) refBtn.disabled = false;
+    if (goBtn) goBtn.disabled = false;
+    if (lockBtn) lockBtn.disabled = false;
   }
 }
 
@@ -2020,7 +2202,7 @@ function showScenePopup(sceneId) {
     decor1Prompt.value = "";
     decor1Prompt.disabled = decorLocked;
     decor1Prompt.onkeydown = (e) => {
-      if (e.key === 'Enter') editSceneWithPrompt(sceneId, decor1Prompt.value);
+      if (e.key === 'Enter') editSceneDecor1(sceneId, decor1Prompt.value);
     };
   }
   if (decor1RefBtn) {
@@ -2028,7 +2210,13 @@ function showScenePopup(sceneId) {
     decor1RefBtn.disabled = decorLocked;
   }
   if (decor1Go) {
-    decor1Go.onclick = () => decor1Prompt?.value ? editSceneWithPrompt(sceneId, decor1Prompt.value) : rerenderScene(sceneId);
+    decor1Go.onclick = () => {
+      if (decor1Prompt?.value?.trim()) {
+        editSceneDecor1(sceneId, decor1Prompt.value);
+      } else {
+        rerenderScene(sceneId);
+      }
+    };
     decor1Go.disabled = decorLocked;
   }
   if (decor1Lock) {
@@ -2061,14 +2249,26 @@ function showScenePopup(sceneId) {
   if (decor2Prompt) {
     decor2Prompt.value = "";
     decor2Prompt.onkeydown = (e) => {
-      if (e.key === 'Enter') generateAltDecor(sceneId, decor2Prompt.value);
+      if (e.key === 'Enter') {
+        if (decor2Prompt.value?.trim()) {
+          editSceneDecor2(sceneId, decor2Prompt.value);
+        } else {
+          generateAltDecor(sceneId);
+        }
+      }
     };
   }
   if (decor2RefBtn) {
     decor2RefBtn.onclick = () => openSceneRefPicker(sceneId, 'decor2');
   }
   if (decor2Go) {
-    decor2Go.onclick = () => generateAltDecor(sceneId, decor2Prompt?.value || "");
+    decor2Go.onclick = () => {
+      if (decor2Prompt?.value?.trim()) {
+        editSceneDecor2(sceneId, decor2Prompt.value);
+      } else {
+        generateAltDecor(sceneId);
+      }
+    };
   }
 
   // WARDROBE PREVIEW
@@ -2093,6 +2293,7 @@ function showScenePopup(sceneId) {
 
   // v1.6.5: WARDROBE controls with shot-card styling (input, +, →, lock)
   const wardrobeInput = document.getElementById("sceneWardrobeInput");
+  const wardrobePrompt = document.getElementById("sceneWardrobePrompt");
   const wardrobeRefBtn = document.getElementById("sceneWardrobeRefBtn");
   const wardrobeGo = document.getElementById("sceneWardrobeGo");
   const wardrobeLockBtn = document.getElementById("sceneWardrobeLock");
@@ -2102,7 +2303,15 @@ function showScenePopup(sceneId) {
     wardrobeInput.disabled = wardrobeLocked;
     wardrobeInput.onkeydown = (e) => {
       if (e.key === 'Enter') {
-        updateSceneWardrobeAndGenerate(sceneId, wardrobeInput.value);
+        const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
+        const hasExistingWardrobe = scene?.wardrobe_ref;
+        const wardrobeText = wardrobeInput.value?.trim() || "";
+        
+        if (hasExistingWardrobe && wardrobeText) {
+          editSceneWardrobe(sceneId, wardrobeText);
+        } else {
+          updateSceneWardrobeAndGenerate(sceneId, wardrobeText);
+        }
       }
     };
   }
@@ -2111,7 +2320,19 @@ function showScenePopup(sceneId) {
     wardrobeRefBtn.disabled = wardrobeLocked;
   }
   if (wardrobeGo) {
-    wardrobeGo.onclick = () => updateSceneWardrobeAndGenerate(sceneId, wardrobeInput?.value || "");
+    wardrobeGo.onclick = () => {
+      const wardrobeText = wardrobeInput?.value?.trim() || "";
+      const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
+      const hasExistingWardrobe = scene?.wardrobe_ref;
+      
+      // If wardrobe preview exists + input filled → edit (img2img)
+      // If no preview + input filled → generate (update text + t2i)
+      if (hasExistingWardrobe && wardrobeText) {
+        editSceneWardrobe(sceneId, wardrobeText);
+      } else {
+        updateSceneWardrobeAndGenerate(sceneId, wardrobeText);
+      }
+    };
     wardrobeGo.disabled = wardrobeLocked;
   }
   if (wardrobeLockBtn) {
@@ -2120,7 +2341,9 @@ function showScenePopup(sceneId) {
     wardrobeLockBtn.onclick = () => toggleSceneWardrobeLock(sceneId);
   }
 
-  document.getElementById("scenePopup").classList.remove("hidden");
+  const popup = document.getElementById("scenePopup");
+  popup.dataset.currentScene = sceneId;
+  popup.classList.remove("hidden");
 }
 
 // v1.6.5: Update wardrobe and generate preview in one step
@@ -2149,20 +2372,25 @@ async function updateSceneWardrobeAndGenerate(sceneId, wardrobeText) {
   }
 }
 
-// v1.6.5: Generate alt decor image
-async function generateAltDecor(sceneId, altPrompt) {
+// v1.8.1.2: Generate alt decor (t2i fallback for initial generation)
+async function generateAltDecor(sceneId) {
   try {
     setStatus("Generating alt decor...", null, "storyboardStatus");
 
-    await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/decor_alt`, {
+    const result = await apiCall(`/api/project/${pid()}/castmatrix/scene/${sceneId}/decor_alt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: altPrompt || "" })
+      body: JSON.stringify({ prompt: "" })
     });
 
-    await refreshFromServer();
     setStatus("Alt decor generated", 100, "storyboardStatus");
-    showScenePopup(sceneId);
+    
+    // Targeted update: PROJECT_STATE + popup
+    if (result?.decor_alt) {
+      const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
+      if (scene) scene.decor_alt = result.decor_alt;
+      updateScenePopupDecorAlt(sceneId, result.decor_alt);
+    }
   } catch (e) {
     showError("Failed to generate alt decor: " + e.message);
   }
@@ -2312,6 +2540,7 @@ async function toggleSceneWardrobeLock(sceneId) {
 }
 
 // v1.6.3: Generate wardrobe preview (cast ref_a + decor + wardrobe prompt)
+// v1.8.1.2: Generate wardrobe preview (targeted update)
 async function generateWardrobeRef(sceneId) {
   try {
     setStatus("Generating wardrobe preview...", null, "storyboardStatus");
@@ -2320,9 +2549,14 @@ async function generateWardrobeRef(sceneId) {
       method: "POST"
     });
     
-    await refreshFromServer();
     setStatus("Wardrobe preview generated", 100, "storyboardStatus");
-    showScenePopup(sceneId); // Refresh popup
+    
+    // Targeted update: PROJECT_STATE + popup
+    if (result?.wardrobe_ref) {
+      const scene = PROJECT_STATE?.cast_matrix?.scenes?.find(s => s.scene_id === sceneId);
+      if (scene) scene.wardrobe_ref = result.wardrobe_ref;
+      updateScenePopupWardrobe(sceneId, result.wardrobe_ref);
+    }
   } catch (e) {
     showError("Failed to generate wardrobe preview: " + e.message);
   }
@@ -2360,6 +2594,18 @@ function renderShots(state) {
     const desc = sh.intent || sh.prompt_base || "";
     const hasRender = sh.render?.image_url;
     
+    // v1.8.1.3: Version navigation support
+    const editCount = sh.render?.edits?.length || 0;
+    const selectedIndex = sh.render?.selected_index ?? -1;
+    const totalVersions = editCount + 1;
+    
+    const versionNavHtml = hasRender && totalVersions > 1 ? `
+      <div class="shot-version-nav">
+        <button class="shot-version-arrow" onclick="event.stopPropagation(); prevShotVersion('${sh.shot_id}')" title="Previous version"${selectedIndex <= -1 ? ' disabled' : ''}>◀</button>
+        <button class="shot-version-arrow" onclick="event.stopPropagation(); nextShotVersion('${sh.shot_id}')" title="Next version"${selectedIndex >= editCount - 1 ? ' disabled' : ''}>▶</button>
+      </div>
+    ` : '';
+    
     // v1.5.4: Display shot ID as sc01_sh01 (replace seq_ with sc)
     const displayId = sh.shot_id.replace(/seq_(\d+)/, 'sc$1');
     
@@ -2389,6 +2635,7 @@ function renderShots(state) {
           <div class="shot-render-container">
             ${hasRender
               ? `<img class="shot-render-img" src="${cacheBust(getThumbnailUrl(sh.render.image_url))}" onerror="this.onerror=null; this.src='${cacheBust(sh.render.image_url)}'" onclick="showImagePopup('${sh.render.image_url}')"/>
+                 ${versionNavHtml}
                  <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${sh.shot_id}')" title="Re-render">↻</button>`
               : inQueue
                 ? `<div class="shot-render-placeholder queue-status">
@@ -2480,6 +2727,7 @@ function hideStopButton() {
 }
 
 // v1.5.4: Quick edit shot with prompt only (uses existing shot/edit endpoint)
+// v1.8.1.3: Shot edit with version history
 async function quickEditShot(shotId, editPrompt) {
   if (!editPrompt?.trim()) {
     showError("Enter an edit prompt");
@@ -2489,26 +2737,51 @@ async function quickEditShot(shotId, editPrompt) {
   // Check if there's a reference image selected
   const refImg = window.SHOT_QUICK_REF?.[shotId] || null;
   
+  // Disable controls during render
+  const input = document.querySelector(`.shot-edit-input[data-shot-id="${shotId}"]`);
+  const refBtn = document.querySelector(`.shot-card[data-shot-id="${shotId}"] .shot-ref-btn`);
+  const goBtn = document.querySelector(`.shot-card[data-shot-id="${shotId}"] .shot-edit-go`);
+  const rerenderBtn = document.querySelector(`.shot-card[data-shot-id="${shotId}"] .rerender-btn`);
+  
+  if (input) input.disabled = true;
+  if (refBtn) refBtn.disabled = true;
+  if (goBtn) goBtn.disabled = true;
+  if (rerenderBtn) rerenderBtn.disabled = true;
+  
   try {
     setStatus(`Editing shot…`, null, "storyboardStatus");
-    await apiCall(`/api/project/${pid()}/shot/${shotId}/edit`, {
+    const result = await apiCall(`/api/project/${pid()}/shot/${shotId}/edit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         edit_prompt: editPrompt.trim(),
         extra_cast: [],
-        ref_image: refImg  // v1.5.4: Optional reference image from another shot
+        ref_image: refImg
       })
     });
-    // Clear input and ref
-    const input = document.querySelector(`.shot-edit-input[data-shot-id="${shotId}"]`);
-    if (input) input.value = "";
-    delete window.SHOT_QUICK_REF?.[shotId];
     
     setStatus("Shot edited", 100, "storyboardStatus");
-    await refreshFromServer();
+    
+    // Clear input and ref
+    if (input) input.value = "";
+    if (refBtn) {
+      refBtn.textContent = "+";
+      refBtn.title = "Add reference";
+    }
+    delete window.SHOT_QUICK_REF?.[shotId];
+    
+    // v1.8.1.3: Targeted update with new version
+    if (result?.image_url) {
+      updateShotCardWithVersion(shotId, result.image_url, result.edit_count, result.selected_index);
+    }
   } catch (e) {
     showError(e.message);
+  } finally {
+    // Re-enable controls
+    if (input) input.disabled = false;
+    if (refBtn) refBtn.disabled = false;
+    if (goBtn) goBtn.disabled = false;
+    if (rerenderBtn) rerenderBtn.disabled = false;
   }
 }
 
@@ -2924,7 +3197,8 @@ function updateSceneCardImage(sceneId, imageUrl) {
     const thumb = segment.querySelector('.timeline-seg-thumb');
     if (thumb) {
       // Remove queue number/import button, add image with click handler
-      thumb.innerHTML = `<img src="${cacheBust(imageUrl)}"/>`;
+      // Force reload with timestamp to bypass cache
+      thumb.innerHTML = `<img src="${imageUrl}?t=${Date.now()}"/>`;
       thumb.onclick = (e) => { e.stopPropagation(); showScenePopup(sceneId); };
       
       // Re-add wardrobe and lock indicators if present
@@ -2940,45 +3214,103 @@ function updateSceneCardImage(sceneId, imageUrl) {
     }
   }
 
-  // Update scene popup if currently open
-  const popup = document.getElementById("scenePopup");
-  if (popup && !popup.classList.contains("hidden")) {
-    const popupImg = document.getElementById("scenePopupImage");
-    if (popupImg) {
-      popupImg.src = cacheBust(imageUrl);
-      popupImg.style.display = "block";
-      popupImg.onclick = () => showImagePopup(imageUrl);
-    }
-  }
+  // Update popup if open
+  updateScenePopupDecor1(sceneId, imageUrl);
 
   console.log(`[updateSceneCardImage] Updated scene ${sceneId} with image ${imageUrl}`);
 }
 
-// v1.5.3: Update shot card with rendered image
-// v1.6.5: Also update PROJECT_STATE to prevent loss on re-render
-function updateShotCardImage(shotId, imageUrl) {
+// v1.8.1.2: Update Decor 1 thumb in popup
+function updateScenePopupDecor1(sceneId, imageUrl) {
+  const popup = document.getElementById("scenePopup");
+  if (!popup || popup.classList.contains("hidden")) return;
+  
+  // Check if popup is showing this scene
+  const currentScene = popup.dataset.currentScene;
+  if (currentScene && currentScene !== sceneId) return;
+  
+  const popupImg = document.getElementById("scenePopupImage");
+  if (popupImg) {
+    // Force reload with timestamp
+    popupImg.src = imageUrl + "?t=" + Date.now();
+    popupImg.style.display = "block";
+    popupImg.onclick = () => showImagePopup(imageUrl);
+  }
+}
+
+// v1.8.1.2: Update Decor 2 (Alt) thumb in popup
+function updateScenePopupDecorAlt(sceneId, imageUrl) {
+  const popup = document.getElementById("scenePopup");
+  if (!popup || popup.classList.contains("hidden")) return;
+  
+  // Check if popup is showing this scene
+  const currentScene = popup.dataset.currentScene;
+  if (currentScene && currentScene !== sceneId) return;
+  
+  const altImg = document.getElementById("scenePopupImageAltImg");
+  if (altImg) {
+    // Force reload with timestamp
+    altImg.src = imageUrl + "?t=" + Date.now();
+    altImg.style.display = "block";
+    altImg.onclick = () => showImagePopup(imageUrl);
+  }
+}
+
+// v1.8.1.2: Update Wardrobe thumb in popup
+function updateScenePopupWardrobe(sceneId, imageUrl) {
+  const popup = document.getElementById("scenePopup");
+  if (!popup || popup.classList.contains("hidden")) return;
+  
+  // Check if popup is showing this scene
+  const currentScene = popup.dataset.currentScene;
+  if (currentScene && currentScene !== sceneId) return;
+  
+  const wardrobeImg = document.getElementById("sceneWardrobePreviewImg");
+  const wardrobeEmpty = document.getElementById("sceneWardrobeEmpty");
+  
+  if (wardrobeImg && wardrobeEmpty) {
+    // Force reload with timestamp
+    wardrobeImg.src = imageUrl + "?t=" + Date.now();
+    wardrobeImg.style.display = "block";
+    wardrobeImg.onclick = () => showImagePopup(imageUrl);
+    wardrobeEmpty.style.display = "none";
+  }
+}
+
+// v1.8.1.3: Update shot card with version history support
+function updateShotCardWithVersion(shotId, imageUrl, editCount, selectedIndex) {
   const card = document.querySelector(`.shot-card[data-shot-id="${shotId}"]`);
   if (!card) return;
 
   const container = card.querySelector('.shot-render-container');
   if (!container) return;
 
-  // v1.6.5: Update PROJECT_STATE so the image persists through re-renders
+  // Update PROJECT_STATE with version info
   const shots = PROJECT_STATE?.storyboard?.shots || [];
   const shot = shots.find(s => s.shot_id === shotId);
-  if (shot) {
-    shot.render = shot.render || {};
+  if (shot && shot.render) {
     shot.render.image_url = imageUrl;
-    shot.render.status = "done";
+    shot.render.selected_index = selectedIndex;
   }
 
-  // Also add the edit row if not present
+  // Build version navigation arrows
+  const totalVersions = editCount + 1; // original + edits
+  const currentVersion = selectedIndex + 1; // -1=original(0), 0=edit1(1), etc
+  
+  const navHtml = totalVersions > 1 ? `
+    <div class="shot-version-nav">
+      <button class="shot-version-arrow" onclick="event.stopPropagation(); prevShotVersion('${shotId}')" title="Previous version"${selectedIndex <= -1 ? ' disabled' : ''}>◀</button>
+      <button class="shot-version-arrow" onclick="event.stopPropagation(); nextShotVersion('${shotId}')" title="Next version"${selectedIndex >= editCount - 1 ? ' disabled' : ''}>▶</button>
+    </div>
+  ` : '';
+
   container.innerHTML = `
-    <img class="shot-render-img" src="${cacheBust(imageUrl)}" onclick="showImagePopup('${imageUrl}')"/>
+    <img class="shot-render-img" src="${imageUrl}?t=${Date.now()}" onclick="showImagePopup('${imageUrl}')"/>
+    ${navHtml}
     <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${shotId}')" title="Re-render">↻</button>
   `;
 
-  // v1.6.6: Add the edit row below the render if not present
+  // Ensure edit row exists
   const existingEditRow = card.querySelector('.shot-edit-row');
   if (!existingEditRow) {
     const body = card.querySelector('.shot-card-body');
@@ -2992,6 +3324,57 @@ function updateShotCardImage(shotId, imageUrl) {
       `;
       body.appendChild(editRow);
     }
+  }
+
+  console.log(`[updateShotCardWithVersion] Updated shot ${shotId} - version ${currentVersion}/${totalVersions}`);
+}
+
+// v1.5.3: Update shot card with rendered image (legacy support)
+function updateShotCardImage(shotId, imageUrl) {
+  updateShotCardWithVersion(shotId, imageUrl, 0, -1);
+}
+
+// v1.8.1.3: Navigate to previous shot version
+async function prevShotVersion(shotId) {
+  const shot = PROJECT_STATE?.storyboard?.shots?.find(s => s.shot_id === shotId);
+  if (!shot?.render) return;
+  
+  const currentIndex = shot.render.selected_index ?? -1;
+  if (currentIndex <= -1) return; // Already at original
+  
+  const newIndex = currentIndex - 1;
+  await selectShotVersion(shotId, newIndex);
+}
+
+// v1.8.1.3: Navigate to next shot version
+async function nextShotVersion(shotId) {
+  const shot = PROJECT_STATE?.storyboard?.shots?.find(s => s.shot_id === shotId);
+  if (!shot?.render) return;
+  
+  const edits = shot.render.edits || [];
+  const currentIndex = shot.render.selected_index ?? -1;
+  if (currentIndex >= edits.length - 1) return; // Already at latest
+  
+  const newIndex = currentIndex + 1;
+  await selectShotVersion(shotId, newIndex);
+}
+
+// v1.8.1.3: Select specific shot version
+async function selectShotVersion(shotId, selectedIndex) {
+  try {
+    const result = await apiCall(`/api/project/${pid()}/shot/${shotId}/select_version`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selected_index: selectedIndex })
+    });
+    
+    if (result?.image_url) {
+      const shot = PROJECT_STATE?.storyboard?.shots?.find(s => s.shot_id === shotId);
+      const editCount = shot?.render?.edits?.length || 0;
+      updateShotCardWithVersion(shotId, result.image_url, editCount, selectedIndex);
+    }
+  } catch (e) {
+    showError(e.message);
   }
 }
 

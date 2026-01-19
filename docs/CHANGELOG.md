@@ -1,5 +1,56 @@
 # Changelog
 
+# Fré Pathé v1.8.1.3 - Edit Functions Fix (Critical)
+
+**Release Date:** January 19, 2026  
+**Branch:** `1.8.2`
+
+## 🔧 Critical Fixes
+
+### Edit Functions - Prompt Correction
+**Problem:** All edit endpoints (scenes + shots) were sending complete visual DNA rebuilds to FAL img2img instead of simple edit instructions. This caused edits to recreate entire images rather than modify existing ones.
+
+**Root Cause:** Brain rot. Copy-pasted first-render logic into edit endpoints without understanding img2img purpose. Added style tokens, cast descriptions, and full scene context when img2img already has the image and only needs delta instructions.
+
+**Fixed:**
+- ✅ **Scene Decor 1 edit:** Now sends `"Rerender this exact same image except {edit_prompt}, {no_people}"`
+- ✅ **Scene Decor Alt edit:** Now sends `"Rerender this exact same image except {edit_prompt}, {no_people}"`
+- ✅ **Scene Wardrobe edit:** Now sends `"Rerender this exact same image except {edit_prompt}"`
+- ✅ **Shot edit:** Now sends `"Rerender this exact same image except {edit_prompt}"`
+- ✅ **Shot edit:** Removed erroneous `extra_cast` refs that were being uploaded (not requested)
+
+**What was wrong (example):**
+```python
+# BEFORE (broken)
+full_prompt = build_prompt(state, shot) + edit_prompt + style_tokens() + cast_names
+# 500+ character prompt recreating entire visual world
+
+# AFTER (correct)
+full_prompt = f"Rerender this exact same image except {edit_prompt}"
+# Simple delta instruction for img2img
+```
+
+**Impact:** Edit functions now work as intended - modify existing renders instead of regenerating from scratch.
+
+### Shot Version History
+**Implemented:**
+- ✅ Shot edits preserved in `render.edits[]` array
+- ✅ `render.original_url` immutable, `render.image_url` points to selected version
+- ✅ `render.selected_index` tracks active version (-1 = original, 0+ = edit index)
+- ✅ Navigation arrows (◀ ▶) in shot cards to cycle through versions
+- ✅ Backend endpoints: `POST /shot/{id}/edit`, `PATCH /shot/{id}/select_version`
+- ✅ Frontend: `updateShotCardWithVersion()`, `prevShotVersion()`, `nextShotVersion()`
+
+**Self-Critique:**
+- Started implementation without validating existing scene edit logic was correct
+- Assumed patterns were right, copy-pasted broken logic
+- Didn't ask critical questions about what img2img actually needs
+- Built version navigation system correctly but broke core edit functionality
+- Required multiple corrections after user caught fundamental misunderstanding
+- Score: 8/10 brain rot - saved only by honesty and eventual listening
+
+---
+
 # Fré Pathé v1.8.1 - Img2Vid Module Release
 
 **Release Date:** January 16, 2026  

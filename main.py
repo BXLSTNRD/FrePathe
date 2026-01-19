@@ -1378,6 +1378,85 @@ def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict
     print(f"[INFO] Generated alt decor for {scene_id}")
     return {"scene_id": scene_id, "decor_alt": local_path}
 
+# v1.8.1.2: Edit alt decor with img2img (Decor 2 rerender)
+@app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/edit_decor_alt")
+def api_castmatrix_edit_decor_alt(project_id: str, scene_id: str, payload: Dict[str, Any]):
+    """Edit alt decor using img2img with current image + edit prompt."""
+    state = load_project(project_id)
+    require_key("FAL_KEY", FAL_KEY)
+
+    cm = state.get("cast_matrix") or {}
+    scenes = cm.get("scenes") or []
+    scene = next((s for s in scenes if s.get("scene_id") == scene_id), None)
+    if not scene:
+        raise HTTPException(404, "Scene not found")
+    
+    edit_prompt = payload.get("edit_prompt", "").strip()
+    if not edit_prompt:
+        raise HTTPException(400, "Missing edit_prompt")
+    
+    # Get current alt decor image
+    current_image = scene.get("decor_alt")
+    if not current_image:
+        raise HTTPException(400, "Scene has no alt decor to edit")
+    
+    # Upload current image as reference
+    if current_image.startswith("/renders/"):
+        local_file = PATH_MANAGER.from_url(current_image)
+        if local_file.exists():
+            uploaded_url = fal_client.upload_file(str(local_file))
+        else:
+            raise HTTPException(400, "Alt decor image file not found")
+    else:
+        uploaded_url = current_image
+    
+    # v1.8.1.2: Check for additional reference image (from + button)
+    ref_image = payload.get("ref_image", "").strip()
+    image_refs = [uploaded_url]
+    if ref_image:
+        if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
+            ref_file = PATH_MANAGER.from_url(ref_image)
+            if ref_file.exists():
+                image_refs.append(fal_client.upload_file(str(ref_file)))
+        else:
+            image_refs.append(ref_image)
+    
+    aspect = state["project"]["aspect"]
+    
+    # CRITICAL: Scene decors must NEVER contain people
+    no_people = "no people, no person, no human, no figure, no silhouette, no character, no faces, no hands, no body"
+    
+    # v1.8.1.3: img2img with rerender prefix
+    full_prompt = f"Rerender this exact same image except {edit_prompt}, {no_people}"
+    
+    # Call img2img with original + optional reference
+    editor = locked_editor_key(state)
+    result_url = call_img2img_editor(editor, full_prompt, image_refs, aspect, project_id, state=state)
+    editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
+    
+    # Save locally
+    scene_num = scene_id.replace("scene_", "")
+    scene_title = sanitize_filename(scene.get("title", scene_id), 20)
+    local_url = download_image_locally(result_url, project_id, f"{scene_id}_decor_alt_edit", state=state, friendly_name=f"Sce{scene_num}_{scene_title}_DecorAlt_Edit")
+
+    # Thread-safe save with lock + persist costs
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_cm = fresh_state.get("cast_matrix") or {}
+        fresh_scenes = fresh_cm.get("scenes") or []
+        fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
+        if fresh_scene:
+            fresh_scene["decor_alt"] = local_url
+        
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time(), "note": "scene_decor_alt_edit"})
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
+        
+        save_project(fresh_state)
+
+    return {"scene_id": scene_id, "decor_alt": local_url}
+
 # v1.5.4: Edit scene with custom prompt (img2img)
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/edit")
 def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,Any]):
@@ -1410,18 +1489,28 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
     else:
         uploaded_url = current_image
     
+    # v1.8.1.2: Check for additional reference image (from + button)
+    ref_image = payload.get("ref_image", "").strip()
+    image_refs = [uploaded_url]
+    if ref_image:
+        if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
+            ref_file = PATH_MANAGER.from_url(ref_image)
+            if ref_file.exists():
+                image_refs.append(fal_client.upload_file(str(ref_file)))
+        else:
+            image_refs.append(ref_image)
+    
     aspect = state["project"]["aspect"]
-    style = state["project"]["style_preset"]
     
     # v1.6.3: CRITICAL - Scene decors must NEVER contain people
     no_people = "no people, no person, no human, no figure, no silhouette, no character, no faces, no hands, no body"
     
-    # Build full prompt with no-people constraint
-    full_prompt = ", ".join(style_tokens(style) + [edit_prompt, no_people])
+    # v1.8.1.3: img2img with rerender prefix
+    full_prompt = f"Rerender this exact same image except {edit_prompt}, {no_people}"
     
-    # Call img2img
+    # Call img2img with original + optional reference
     editor = locked_editor_key(state)
-    result_url = call_img2img_editor(editor, full_prompt, [uploaded_url], aspect, project_id, state=state)
+    result_url = call_img2img_editor(editor, full_prompt, image_refs, aspect, project_id, state=state)
     editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     
     # v1.5.9.1: Save locally with friendly name
@@ -1545,6 +1634,95 @@ def api_castmatrix_scene_wardrobe_ref(project_id: str, scene_id: str):
     
     print(f"[INFO] Generated wardrobe preview for {scene_id}")
     return {"scene_id": scene_id, "wardrobe_ref": local_path}
+
+# v1.8.1.2: Edit wardrobe with img2img (Wardrobe rerender)
+@app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/edit_wardrobe")
+def api_castmatrix_edit_wardrobe(project_id: str, scene_id: str, payload: Dict[str, Any]):
+    """Edit wardrobe using img2img with current image + edit prompt."""
+    state = load_project(project_id)
+    require_key("FAL_KEY", FAL_KEY)
+
+    cm = state.get("cast_matrix") or {}
+    scenes = cm.get("scenes") or []
+    scene = next((s for s in scenes if s.get("scene_id") == scene_id), None)
+    if not scene:
+        raise HTTPException(404, "Scene not found")
+    
+    edit_prompt = payload.get("edit_prompt", "").strip()
+    if not edit_prompt:
+        raise HTTPException(400, "Missing edit_prompt")
+    
+    # Get current wardrobe ref
+    current_image = scene.get("wardrobe_ref")
+    if not current_image:
+        raise HTTPException(400, "Scene has no wardrobe to edit")
+    
+    # Upload current image as reference
+    if current_image.startswith("/renders/"):
+        local_file = PATH_MANAGER.from_url(current_image)
+        if local_file.exists():
+            uploaded_url = fal_client.upload_file(str(local_file))
+        else:
+            raise HTTPException(400, "Wardrobe image file not found")
+    else:
+        uploaded_url = current_image
+    
+    # v1.8.1.2: Check for additional reference image (from + button)
+    ref_image = payload.get("ref_image", "").strip()
+    image_refs = [uploaded_url]
+    if ref_image:
+        if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
+            ref_file = PATH_MANAGER.from_url(ref_image)
+            if ref_file.exists():
+                image_refs.append(fal_client.upload_file(str(ref_file)))
+        else:
+            image_refs.append(ref_image)
+    
+    # v1.8.1.2: Check for additional reference image (from + button)
+    ref_image = payload.get("ref_image", "").strip()
+    image_refs = [uploaded_url]
+    if ref_image:
+        if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
+            ref_file = PATH_MANAGER.from_url(ref_image)
+            if ref_file.exists():
+                image_refs.append(fal_client.upload_file(str(ref_file)))
+        else:
+            image_refs.append(ref_image)
+    
+    aspect = state["project"]["aspect"]
+    
+    # v1.8.1.3: img2img with rerender prefix
+    full_prompt = f"Rerender this exact same image except {edit_prompt}"
+    
+    # Call img2img with original + optional reference
+    editor = locked_editor_key(state)
+    result_url = call_img2img_editor(editor, full_prompt, image_refs, aspect, project_id, state=state)
+    editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
+    
+    # Save locally
+    scene_num = scene_id.replace("scene_", "")
+    scene_title = sanitize_filename(scene.get("title", scene_id), 20)
+    local_url = download_image_locally(result_url, project_id, f"{scene_id}_wardrobe_edit", state=state, friendly_name=f"Sce{scene_num}_{scene_title}_Wardrobe_Edit")
+
+    # Thread-safe save with lock + persist costs + update wardrobe text
+    with get_project_lock(project_id):
+        fresh_state = load_project(project_id)
+        fresh_cm = fresh_state.get("cast_matrix") or {}
+        fresh_scenes = fresh_cm.get("scenes") or []
+        fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
+        if fresh_scene:
+            fresh_scene["wardrobe_ref"] = local_url
+            fresh_scene["wardrobe"] = edit_prompt  # Update wardrobe text to match edit
+        
+        if "costs" not in fresh_state:
+            fresh_state["costs"] = {"total": 0.0, "calls": []}
+        fresh_state["costs"]["calls"].append({"model": f"fal-ai/{editor}", "cost": round(editor_cost, 4), "ts": time.time(), "note": "wardrobe_edit"})
+        fresh_state["costs"]["total"] = round(fresh_state["costs"].get("total", 0) + editor_cost, 4)
+        
+        save_project(fresh_state)
+
+    return {"scene_id": scene_id, "wardrobe_ref": local_url}
+
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/import")
 async def api_castmatrix_import_scene(project_id: str, scene_id: str, file: UploadFile = File(...)):
     """Import custom image for scene decor."""
@@ -2364,11 +2542,15 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
             friendly_name = shot_id
         img_url = download_image_locally(img_url, project_id, shot_id, state=state, friendly_name=friendly_name)
 
+    # v1.8.1.3: Initialize render with version history support
     render_result = {
         "status":"done" if img_url else "error",
         "image_url": img_url,
+        "original_url": img_url,  # v1.8.1.3: Save original render
         "model": model_name,
         "ref_images_used": len(ref_images),
+        "edits": [],  # v1.8.1.3: Edit history
+        "selected_index": -1,  # v1.8.1.3: -1 = original, 0+ = edit index
         "error": None if img_url else "No image url found"
     }
 
@@ -2378,6 +2560,11 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
         fresh_shots = fresh_state.get("storyboard", {}).get("shots", [])
         fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
         if fresh_shot:
+            # v1.8.1.3: Preserve existing edits if re-rendering
+            existing_render = fresh_shot.get("render", {})
+            if existing_render.get("edits"):
+                render_result["edits"] = existing_render["edits"]
+                render_result["selected_index"] = existing_render.get("selected_index", -1)
             fresh_shot["render"] = render_result
         
         # v1.7.1: Persist costs to fresh_state
@@ -2393,10 +2580,10 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
     return {"shot_id": shot_id, "prompt": prompt, "image_url": img_url, "ref_images_used": len(ref_images), "result": render_result}
 
 
-# v1.5.3: Edit a rendered shot with custom prompt and extra cast refs
+# v1.8.1.3: Edit a rendered shot with custom prompt and extra cast refs + version history
 @app.post("/api/project/{project_id}/shot/{shot_id}/edit")
 def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
-    """Edit a rendered shot using img2img with custom prompt and extra cast references."""
+    """Edit a rendered shot using img2img with custom prompt and extra cast references. Preserves version history."""
     state = load_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
     
@@ -2409,115 +2596,92 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
         raise HTTPException(400, "Shot has no render to edit. Render first.")
     
     edit_prompt = payload.get("edit_prompt", "").strip()
-    extra_cast = payload.get("extra_cast", [])  # List of cast_ids to add refs from
-    ref_image = payload.get("ref_image")  # v1.5.4: Optional reference image URL from another shot
+    ref_image = payload.get("ref_image")  # v1.8.1.2: Optional reference image from + button
     
-    # Get the current rendered image
-    current_render_url = shot["render"]["image_url"]
+    # v1.8.1.3: Get currently selected version (original or an edit)
+    render_obj = shot["render"]
+    original_url = render_obj.get("original_url") or render_obj.get("image_url")
+    current_render_url = render_obj.get("image_url")
     aspect = state["project"]["aspect"]
     
-    # Build reference images list
-    ref_images = []
+    # v1.8.1.3: Build reference images - ONLY current shot + optional ref from + button
+    image_refs = []
     
     # 1. Upload current render as primary reference
     if current_render_url.startswith("/renders/"):
         local_file = PATH_MANAGER.from_url(current_render_url)
         if local_file.exists():
-            try:
-                uploaded_url = fal_client.upload_file(str(local_file))
-                ref_images.append(uploaded_url)
-                print(f"[INFO] Uploaded current render for editing")
-            except Exception as e:
-                print(f"[WARN] Failed to upload current render: {e}")
-    else:
-        ref_images.append(current_render_url)
-    
-    # v1.5.4: Add reference image from another shot if provided
-    if ref_image:
-        if ref_image.startswith("/renders/"):
-            local_file = PATH_MANAGER.from_url(ref_image)
-            if local_file.exists():
-                try:
-                    uploaded_url = fal_client.upload_file(str(local_file))
-                    ref_images.append(uploaded_url)
-                    print(f"[INFO] Uploaded reference image for editing")
-                except Exception as e:
-                    print(f"[WARN] Failed to upload reference image: {e}")
+            uploaded_url = fal_client.upload_file(str(local_file))
+            image_refs.append(uploaded_url)
         else:
-            ref_images.append(ref_image)
-    
-    # 2. Add extra cast refs (both A and B for each)
-    char_refs = state.get("cast_matrix", {}).get("character_refs", {})
-    for cast_id in extra_cast:
-        refs = char_refs.get(cast_id, {})
-        for ref_type in ["ref_a", "ref_b"]:
-            ref_url = refs.get(ref_type)
-            if ref_url:
-                if ref_url.startswith("/renders/"):
-                    local_file = PATH_MANAGER.from_url(ref_url)
-                    if local_file.exists():
-                        try:
-                            uploaded_url = fal_client.upload_file(str(local_file))
-                            ref_images.append(uploaded_url)
-                            print(f"[INFO] Uploaded {cast_id} {ref_type} for editing")
-                        except:
-                            pass
-                else:
-                    ref_images.append(ref_url)
-    
-    # Build the edit prompt
-    # Combine original shot context with edit instruction
-    base_prompt = build_prompt(state, shot)
-    if edit_prompt:
-        full_prompt = f"{base_prompt}, {edit_prompt}"
+            raise HTTPException(400, "Current shot render file not found")
     else:
-        full_prompt = base_prompt
+        image_refs.append(current_render_url)
     
-    # Add cast names from extra_cast to prompt
-    cast_list = state.get("cast", [])
-    for cast_id in extra_cast:
-        cast_member = next((c for c in cast_list if c.get("cast_id") == cast_id), None)
-        if cast_member:
-            name = cast_member.get("name", "")
-            if name:
-                full_prompt = f"{full_prompt}, {name} visible in scene"
-            if cast_member.get("prompt_extra"):
-                full_prompt = f"{full_prompt}, {cast_member['prompt_extra']}"
+    # 2. Optional reference from + button (same as scenes)
+    if ref_image:
+        if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
+            ref_file = PATH_MANAGER.from_url(ref_image)
+            if ref_file.exists():
+                image_refs.append(fal_client.upload_file(str(ref_file)))
+        else:
+            image_refs.append(ref_image)
+    
+    # v1.8.1.3: img2img with rerender prefix
+    full_prompt = f"Rerender this exact same image except {edit_prompt}" if edit_prompt else "Rerender this exact same image, enhance quality"
     
     # Call img2img
     editor = locked_editor_key(state)
     try:
-        img_url = call_img2img_editor(editor, full_prompt, ref_images, aspect, project_id, state=state)
+        img_url = call_img2img_editor(editor, full_prompt, image_refs, aspect, project_id, state=state)
         editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
     except Exception as e:
         raise HTTPException(502, f"Edit failed: {str(e)}")
     
-    # v1.5.9.1: Save locally with friendly name
+    # v1.5.9.1: Save locally with friendly name + edit number
     if img_url:
         parts = shot_id.split("_")
+        edit_count = len(render_obj.get("edits", [])) + 1
         if len(parts) >= 4:
-            friendly_name = f"Sce{parts[1]}_Sho{parts[3]}_Edit"
+            friendly_name = f"Sce{parts[1]}_Sho{parts[3]}_Edit{edit_count}"
         else:
-            friendly_name = f"{shot_id}_edit"
-        img_url = download_image_locally(img_url, project_id, f"{shot_id}_edit", state=state, friendly_name=friendly_name)
+            friendly_name = f"{shot_id}_edit{edit_count}"
+        img_url = download_image_locally(img_url, project_id, f"{shot_id}_edit{edit_count}", state=state, friendly_name=friendly_name)
     
-    # v1.6.5: Thread-safe save - reload state, update shot, save atomically
-    render_result = {
-        "status": "done" if img_url else "error",
-        "image_url": img_url,
+    # v1.8.1.3: Build edit entry for history
+    edit_entry = {
+        "url": img_url,
+        "prompt": edit_prompt,
+        "timestamp": time.time(),
         "model": editor,
-        "ref_images_used": len(ref_images),
-        "edit_prompt": edit_prompt,
-        "extra_cast": extra_cast,
-        "error": None if img_url else "Edit failed"
+        "ref_images_used": len(ref_images)
     }
 
+    # v1.8.1.3: Thread-safe save with version history
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
         fresh_shots = fresh_state.get("storyboard", {}).get("shots", [])
         fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
         if fresh_shot:
-            fresh_shot["render"] = render_result
+            render_obj = fresh_shot.get("render", {})
+            
+            # v1.8.1.3: Initialize version history on first edit
+            if "original_url" not in render_obj:
+                render_obj["original_url"] = render_obj.get("image_url")
+            if "edits" not in render_obj:
+                render_obj["edits"] = []
+            if "selected_index" not in render_obj:
+                render_obj["selected_index"] = -1  # -1 = original
+            
+            # Add edit to history
+            render_obj["edits"].append(edit_entry)
+            
+            # Set new edit as selected version
+            render_obj["selected_index"] = len(render_obj["edits"]) - 1
+            render_obj["image_url"] = img_url
+            render_obj["status"] = "done"
+            
+            fresh_shot["render"] = render_obj
         
         # v1.7.1: Persist costs to fresh_state
         if "costs" not in fresh_state:
@@ -2529,11 +2693,50 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
 
     return {
         "shot_id": shot_id,
-        "prompt": full_prompt,
         "image_url": img_url,
-        "ref_images_used": len(ref_images),
-        "edit_prompt": edit_prompt,
-        "extra_cast": extra_cast
+        "edit_count": len(render_obj.get("edits", [])),
+        "selected_index": render_obj.get("selected_index", -1)
+    }
+
+
+# v1.8.1.3: Select version (original or edit) for shot
+@app.patch("/api/project/{project_id}/shot/{shot_id}/select_version")
+def api_select_shot_version(project_id: str, shot_id: str, payload: Dict[str, Any]):
+    """Select which version (original or edit) to use as active."""
+    state = load_project(project_id)
+    
+    shots = state.get("storyboard", {}).get("shots", [])
+    shot = next((s for s in shots if s.get("shot_id") == shot_id), None)
+    if not shot:
+        raise HTTPException(404, "Shot not found")
+    
+    render_obj = shot.get("render", {})
+    if not render_obj.get("original_url"):
+        raise HTTPException(400, "Shot has no render")
+    
+    selected_index = payload.get("selected_index", -1)
+    edits = render_obj.get("edits", [])
+    
+    # Validate index
+    if selected_index < -1 or selected_index >= len(edits):
+        raise HTTPException(400, f"Invalid selected_index: {selected_index}")
+    
+    # Update selected version
+    if selected_index == -1:
+        # Select original
+        render_obj["image_url"] = render_obj["original_url"]
+    else:
+        # Select edit
+        render_obj["image_url"] = edits[selected_index]["url"]
+    
+    render_obj["selected_index"] = selected_index
+    shot["render"] = render_obj
+    save_project(state)
+    
+    return {
+        "shot_id": shot_id,
+        "selected_index": selected_index,
+        "image_url": render_obj["image_url"]
     }
 
 

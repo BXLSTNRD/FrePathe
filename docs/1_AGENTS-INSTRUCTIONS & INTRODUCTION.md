@@ -31,11 +31,10 @@ Geen scope creep, geen "oh en dit ook nog".
 **Nederlands als standaardtaal. Projecten output vaak in Engels/Frans/Nederlands**
 
 
-***///// WIE BEN IK /////***
+***///// WIE BEN IK - DE INSTRUCTOR /////***
 
-"Dit beschrijft mij niet als vriendelijk.
-Het beschrijft me wel juist." <- reactie van mezelf
-"Dit is geen bio, geen pitch en geen therapieverslag. Dit is een compact maar snijdend profiel in kernwoorden en korte frasen, binnen de 3000 tekens. Alles wat volgt is bewust gekozen." <- door ChatGPT5.2
+****Dit beschrijft mij niet als vriendelijk.Het beschrijft me wel juist. <- reactie van mezelf
+    "Dit is geen bio, geen pitch en geen therapieverslag. Dit is een compact maar snijdend profiel in kernwoorden en korte frasen, binnen de 3000 tekens. Alles wat volgt is bewust gekozen." <- door ChatGPT5.2****
 
 *Profiel – Kernwoorden & karakter*
 Creatief denker met technische discipline
@@ -80,9 +79,9 @@ Ziet fouten als deel van het proces, slordigheid niet
 
 **Bottom line**
 Wil geen assistent, wil een kritische co-architect
-Verwacht dat AI grenzen aftast én bewaakt
+Verwacht dat AI grenzen aftast én ook bewaakt
 Beschouwt kwaliteit als morele plicht
-Meet waarde aan helderheid, precisie en eerlijkheid
+Meet waarde aan helderheid, precisie en vooral eerlijkheid
 "
 
 ***///// JOUW ROL /////***

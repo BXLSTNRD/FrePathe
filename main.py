@@ -195,6 +195,16 @@ def static_logo():
     from fastapi.responses import FileResponse
     return FileResponse(str(LOGO_PATH), media_type="image/png")
 
+@app.get("/static/couch.png")
+def static_couch():
+    from fastapi.responses import FileResponse
+    return FileResponse(str(STATIC_DIR / "couch.png"), media_type="image/png")
+
+@app.get("/static/hanger.png")
+def static_hanger():
+    from fastapi.responses import FileResponse
+    return FileResponse(str(STATIC_DIR / "hanger.png"), media_type="image/png")
+
 @app.get("/files/{filepath:path}")
 def serve_file(filepath: str):
     """

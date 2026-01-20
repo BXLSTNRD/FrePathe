@@ -1207,7 +1207,8 @@ button.tiny {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
+  padding-top: 8px;
 }
 
 .timeline-seg-rerender {
@@ -1772,6 +1773,30 @@ button.tiny {
 /* v1.7.1: When wardrobe alone (no lock sibling), align to right edge */
 .wardrobe-indicator:last-child {
   right: 4px;
+}
+
+/* v1.8.4: Timeline indicators - altscene and wardrobe */
+.timeline-indicators {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.altscene-indicator,
+.wardrobe-indicator-new {
+  width: 14px;
+  height: 14px;
+  opacity: 0.25;
+}
+
+.altscene-indicator.active,
+.wardrobe-indicator-new.active {
+  opacity: 1;
 }
 
 /* v1.6.5: Scene popup - 3 preview boxes layout */

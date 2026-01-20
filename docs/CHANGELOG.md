@@ -1,5 +1,34 @@
 # Changelog
 
+# Fré Pathé v1.8.4 - Timeline Scene Indicators UI (2026-01-20)
+
+**Release Date:** January 20, 2026  
+**Agent:** GitHub Copilot Claude Opus 4.1  
+**Score:** 3/10 (Werkend maar te veel iteraties nodig)
+
+## 🎨 Timeline Scene Card Indicators
+
+**Added:** Wardrobe & AltScene visual indicators op timeline cards
+
+**Features:**
+- **Wardrobe indicator** (hanger.png) - Toont wanneer scene `wardrobe` data heeft
+- **AltScene indicator** (couch.png) - Toont wanneer scene `decor_alt` data heeft  
+- **Positionering:** Onderaan rechts in card, 8px van rand
+- **Stati:** Donker (25% opacity) wanneer niet actief, vol (100%) wanneer actief
+- **Titel alignment:** Naar boven verplaatst met `padding-top` ipv center
+
+**Issues opgelost:**
+- PNG files laden niet → FastAPI routes toegevoegd voor `/static/couch.png` en `/static/hanger.png`
+- Text overlap met thumb → Indicators verplaatst buiten thumb div
+- Lelijke placeholder blokken → Path gefixed met `/static/` prefix
+
+**Files gewijzigd:**
+- `app.js`: Timeline card HTML met nieuwe indicator divs
+- `style.css`: Indicator styling, positioning en opacity states
+- `main.py`: Static routes voor couch.png en hanger.png
+
+---
+
 # Fré Pathé v1.8.3 - Cast Matrix Rerender & Style Lock Removal (2026-01-20)
 
 **Release Date:** January 20, 2026  

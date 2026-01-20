@@ -2159,6 +2159,7 @@ function renderTimeline(state) {
     const queuePos = inQueueScenes.indexOf(scene?.scene_id);
     const inQueue = queuePos >= 0;
     const hasWardrobe = scene?.wardrobe?.trim();
+    const hasAltScene = scene?.decor_alt?.trim();
     
     return `
       <div class="timeline-seg-v2 ${selected} ${inQueue ? 'in-queue' : ''}" onclick="selectSequence('${seq.sequence_id}', event)" data-scene-id="${scene?.scene_id || ''}" data-sequence-id="${seq.sequence_id}">
@@ -2174,6 +2175,10 @@ function renderTimeline(state) {
         <div class="timeline-seg-info">
           <div class="timeline-seg-title">${sceneTitle}</div>
           <div class="timeline-seg-sub">${seq.structure_type || ""}</div>
+        </div>
+        <div class="timeline-indicators">
+          <img class="altscene-indicator ${hasAltScene ? 'active' : ''}" src="/static/couch.png" title="${hasAltScene ? 'Has alternative scene' : 'No alternative scene'}"/>
+          <img class="wardrobe-indicator-new ${hasWardrobe ? 'active' : ''}" src="/static/hanger.png" title="${hasWardrobe ? scene.wardrobe : 'No wardrobe change'}"/>
         </div>
       </div>
     `;

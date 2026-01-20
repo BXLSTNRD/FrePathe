@@ -196,34 +196,6 @@ def get_character_refs(state: Dict[str, Any], cast_id: str) -> Dict[str, Any]:
     return state.get("cast_matrix", {}).get("character_refs", {}).get(cast_id, {})
 
 
-# ========= Style Lock =========
-
-def check_style_lock(state: Dict[str, Any]) -> bool:
-    """Check if style is locked."""
-    return state.get("project", {}).get("style_locked", False)
-
-
-def get_style_lock_image(state: Dict[str, Any]) -> Optional[str]:
-    """Get the style lock image URL."""
-    return state.get("project", {}).get("style_lock_image")
-
-
-def set_style_lock(
-    state: Dict[str, Any],
-    locked: bool,
-    image_url: Optional[str] = None
-) -> None:
-    """Set or clear style lock."""
-    state["project"]["style_locked"] = locked
-    state["project"]["style_lock_image"] = image_url if locked else None
-
-
-def clear_style_lock(state: Dict[str, Any]) -> None:
-    """Clear style lock to allow re-rendering with different style."""
-    state["project"]["style_locked"] = False
-    state["project"]["style_lock_image"] = None
-
-
 # ========= Cast Prompts =========
 
 def build_cast_prompt_tokens(cast: Dict[str, Any]) -> List[str]:

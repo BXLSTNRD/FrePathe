@@ -5,11 +5,22 @@
       -> thumb/cardupdate bij rerender... (OK)
       -> Concurrency voor video verhogen (DONE)
 
-1.8.3 -> UI Overhoal
+1.8.3 -> CastMatrix Rerender Workflow - (DONE)
+      -> Style Lock Complete Removal - (DONE)
+      -> Async RefA/RefB Generation (Optimization #5) - (DONE)
+      -> ORG-IMG Upload Bug Fix - (DONE)
+      -> Thumbnail Cache Invalidation - (DONE)
+
+1.8.4 -> Optimalisatie CastMatrix (Queue Systeem)
+            -> Zie docs/CAST_MATRIX_OPTIMIZATIONS.md
+            -> Smart queueing: batch similar ref generations
+            -> Intelligent RENDER_SEMAPHORE utilization
+            -> Priority system (user-initiated > auto-batch)
+      -> UI Overhoal
       -> Styles+Prompts masterfinetunen
       -> GPT1.5-Edit toevoegen
 
-1.8.4 -> Save/Load -> Weg uit data; userfriendly
+1.8.5 -> Save/Load -> Weg uit data; userfriendly
             -> Seriously; updaten van een oud project naar een nieuw maakt wel nieuwe map met JSON aan.
              Maar de oude MAG ni weg; daar zitten de helft vd renders... DUH  
              En Alles wat verspreid zit... ALLES IN PJCTMAP OOK Debugfiles

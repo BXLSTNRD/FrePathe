@@ -1125,9 +1125,10 @@ function renderCastList(state) {
       const role = c.role || defaultRole;
       const impact = c.impact ?? defaultImpacts[role];
       const promptExtra = c.prompt_extra || "";
-      // Consider refs available if canonical character refs exist OR the cast has uploaded reference images
-      const hasUploadedRefs = (c.reference_images && c.reference_images.length > 0);
-      const hasRefs = (refs.ref_a && refs.ref_b) || hasUploadedRefs;
+      // v1.8.3: READY only when canonical refs exist (after CREATE generates them)
+      const hasRefs = (refs.ref_a && refs.ref_b);
+      // v1.8.3: Show rerender-both button if ORG-IMG uploaded (even without refs)
+      const hasOrgImg = (c.reference_images && c.reference_images.length > 0);
       
       html += `
         <div class="cast-card" data-cast-id="${c.cast_id}">
@@ -1168,7 +1169,7 @@ function renderCastList(state) {
           <div class="cast-prompt-row">
             <input type="text" class="cast-prompt" placeholder="Extra prompt..." value="${promptExtra}" 
               onchange="updateCastPrompt('${c.cast_id}', this.value)" ${isLocked ? 'disabled' : ''}/>
-            ${!isLocked && hasRefs ? `<button class="cast-prompt-rerender" onclick="rerenderCastWithPrompt('${c.cast_id}')" title="Rerender with prompt">↻</button>` : ''}
+            ${!isLocked && (hasRefs || hasOrgImg) ? `<button class="cast-prompt-rerender" onclick="rerenderCastWithPrompt('${c.cast_id}')" title="Rerender with prompt">↻</button>` : ''}
           </div>
           
           <div class="cast-ref-a" onclick="${refs.ref_a ? `showImagePopup('${refs.ref_a}')` : (!isLocked ? `this.parentElement.querySelector('input[data-type=ref_a]').click()` : '')}" style="cursor: ${refs.ref_a ? 'pointer' : 'default'};">
@@ -1195,7 +1196,7 @@ function renderCastList(state) {
         <div class="cast-card empty" data-idx="${idx}">
           <input type="file" class="cast-file-input" accept="image/*" onchange="uploadNewCast(${idx}, '${defaultRole}', this)" ${isLocked ? 'disabled' : ''}/>
           
-          <div class="cast-thumb" onclick="this.previousElementSibling.click()">
+          <div class="cast-thumb" onclick="this.parentElement.querySelector('.cast-file-input').click()">
             <span>+</span>
           </div>
           
@@ -1221,10 +1222,6 @@ function renderCastList(state) {
   
   list.innerHTML = html;
   updateCastLockUI(isLocked);
-  
-  // v1.6.3: Update style lock UI
-  const styleLocked = state.project?.style_locked || false;
-  updateStyleLockUI(styleLocked);
   
   // v1.5.9: Toggle cast-expanded class when 4+ cast members
   const twoColumn = document.querySelector('.two-column');
@@ -1418,6 +1415,13 @@ async function updateCastPrompt(castId, promptExtra) {
 
 // v1.4.9.1: Rerender single ref (A or B)
 async function rerenderSingleRef(castId, refType) {
+  // v1.8.3: Grey-out button during render
+  const btn = event?.target;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "...";
+  }
+  
   try {
     setStatus(`Regenerating ref ${refType.toUpperCase()}…`, null, "castStatus");
     // Read the in-UI extra prompt for this cast card (if present)
@@ -1434,6 +1438,12 @@ async function rerenderSingleRef(castId, refType) {
     if (resp && resp.url) {
       setStatus(`Ref ${refType.toUpperCase()} regenerated`, 100, "castStatus");
 
+      // v1.8.3: Delete OLD ref cache before updating
+      const oldRef = PROJECT_STATE?.cast_matrix?.character_refs?.[castId]?.[`ref_${refType}`];
+      if (oldRef) {
+        try { IMAGE_CACHE.delete(oldRef); } catch (e) {}
+      }
+
       // Ensure PROJECT_STATE has cast_matrix.character_refs structure
       PROJECT_STATE = PROJECT_STATE || {};
       PROJECT_STATE.cast_matrix = PROJECT_STATE.cast_matrix || {};
@@ -1443,8 +1453,6 @@ async function rerenderSingleRef(castId, refType) {
       PROJECT_STATE.cast_matrix.character_refs[castId] = charRefs;
 
       // Update only this cast card UI
-      // Invalidate any cached mapping for this URL so cacheBust returns a fresh timestamp
-      try { IMAGE_CACHE.delete(resp.url); } catch (e) {}
       updateCastCardRefs(castId, charRefs);
     } else {
       // Fallback: refresh entire project state
@@ -1455,30 +1463,108 @@ async function rerenderSingleRef(castId, refType) {
     }
   } catch (e) {
     showError(e.message);
+  } finally {
+    // v1.8.3: Re-enable button
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "↻";
+    }
   }
 }
 
-// v1.6.3: Rerender both refs with current extra prompt
+// v1.8.3: Rerender both refs - intelligent routing (CREATE vs EDIT)
 async function rerenderCastWithPrompt(castId) {
   if (PENDING_CAST_REFS.has(castId)) {
     console.log(`Cast ${castId} refs already in progress`);
     return;
   }
   
+  // v1.8.3: Grey-out button during render
+  const btn = event?.target;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "...";
+  }
+  
   try {
     PENDING_CAST_REFS.add(castId);
-    setStatus("Regenerating with extra prompt…", null, "castStatus");
-    await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
-    setStatus("References regenerated", 100, "castStatus");
     
-    // v1.7.0: Update only this cast card, not entire list
-    const freshState = await apiCall(`/api/project/${pid()}`);
-    PROJECT_STATE = freshState;
-    updateCastCardRefs(castId, freshState);
+    // Check if refs already exist
+    const charRefs = PROJECT_STATE?.cast_matrix?.character_refs || {};
+    const refs = charRefs[castId] || {};
+    const hasRefs = (refs.ref_a && refs.ref_b);
+    
+    // Read the in-UI extra prompt for this cast card
+    const promptEl = document.querySelector(`.cast-card[data-cast-id="${castId}"] .cast-prompt`);
+    const editPrompt = promptEl ? promptEl.value.trim() : "";
+    
+    if (hasRefs) {
+      // v1.8.3: EDIT mode - rerender existing refs with edit-style prompts
+      setStatus("Regenerating ref A…", null, "castStatus");
+      const respA = await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/a`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ edit_prompt: editPrompt })
+      });
+      
+      setStatus("Regenerating ref B…", null, "castStatus");
+      const respB = await apiCall(`/api/project/${pid()}/cast/${castId}/rerender/b`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ edit_prompt: editPrompt })
+      });
+      
+      setStatus("Both refs regenerated", 100, "castStatus");
+      
+      // Update UI with new refs
+      if (respA?.url && respB?.url) {
+        // v1.8.3: Invalidate OLD refs cache BEFORE updating state
+        const oldRefs = PROJECT_STATE?.cast_matrix?.character_refs?.[castId] || {};
+        if (oldRefs.ref_a) {
+          try { IMAGE_CACHE.delete(oldRefs.ref_a); } catch (e) {}
+        }
+        if (oldRefs.ref_b) {
+          try { IMAGE_CACHE.delete(oldRefs.ref_b); } catch (e) {}
+        }
+        
+        // Update state with new refs
+        PROJECT_STATE = PROJECT_STATE || {};
+        PROJECT_STATE.cast_matrix = PROJECT_STATE.cast_matrix || {};
+        PROJECT_STATE.cast_matrix.character_refs = PROJECT_STATE.cast_matrix.character_refs || {};
+        const charRefs = { ref_a: respA.url, ref_b: respB.url };
+        PROJECT_STATE.cast_matrix.character_refs[castId] = charRefs;
+        
+        updateCastCardRefs(castId, charRefs);
+      } else {
+        // Fallback: refresh entire state
+        const freshState = await apiCall(`/api/project/${pid()}`);
+        PROJECT_STATE = freshState;
+        updateCastCardRefs(castId, freshState);
+      }
+    } else {
+      // v1.8.3: CREATE mode - generate refs from ORG-IMG (first time)
+      setStatus("Generating refs from ORG-IMG…", null, "castStatus");
+      const result = await apiCall(`/api/project/${pid()}/cast/${castId}/canonical_refs`, { method: "POST" });
+      setStatus("Refs created", 100, "castStatus");
+      
+      // Update UI
+      if (result?.refs) {
+        updateCastCardRefs(castId, result.refs);
+      } else {
+        const freshState = await apiCall(`/api/project/${pid()}`);
+        PROJECT_STATE = freshState;
+        updateCastCardRefs(castId, freshState);
+      }
+    }
   } catch (e) {
     showError(e.message);
   } finally {
     PENDING_CAST_REFS.delete(castId);
+    // v1.8.3: Re-enable button
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "↻";
+    }
   }
 }
 
@@ -1573,37 +1659,6 @@ function updateCastLockUI(isLocked) {
   
   // v1.5.4: Update storyboard buttons based on both audio and cast lock
   updateButtonStates();
-}
-
-/// v1.6.5: Style lock UI removed - no badge shown
-// Style lock still functions internally, just no UI indicator
-function updateStyleLockUI(isLocked) {
-  // v1.6.5: Badge completely removed from UI per bugfix 4
-  // Style lock is handled internally without visual indicator
-}
-
-// v1.6.3: Clear style lock
-async function clearStyleLock() {
-  if (!pid()) return;
-  
-  const confirm = window.confirm(
-    "Clear style lock?\n\n" +
-    "This will remove the style anchor image.\n" +
-    "New cast refs may have different visual styles."
-  );
-  if (!confirm) return;
-  
-  try {
-    await apiCall(`/api/project/${pid()}/clear_style_lock`, { method: "POST" });
-    if (PROJECT_STATE?.project) {
-      PROJECT_STATE.project.style_locked = false;
-      PROJECT_STATE.project.style_lock_image = null;
-    }
-    updateStyleLockUI(false);
-    setStatus("Style lock cleared", 100, "castStatus");
-  } catch (e) {
-    showError("Failed to clear style lock: " + e.message);
-  }
 }
 
 // ========= Storyboard =========

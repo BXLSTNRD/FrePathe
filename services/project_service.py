@@ -469,13 +469,7 @@ def migrate_fal_to_local(state: Dict[str, Any]) -> Dict[str, Any]:
     project_id = state["project"]["id"]
     modified = False
 
-    # 1. Check style_lock_image
-    style_img = state["project"].get("style_lock_image")
-    if style_img and "fal.media" in style_img:
-        state["project"]["style_lock_image"] = download_image_locally(style_img, project_id, "style_lock", state)
-        modified = True
-
-    # 2. Check cast refs
+    # 1. Check cast refs
     for cast_id, refs in state.get("cast_matrix", {}).get("character_refs", {}).items():
         for key in ["ref_a", "ref_b"]:
             if refs.get(key) and "fal.media" in refs[key]:
@@ -560,15 +554,9 @@ def new_project(
             "updated_at": now_iso(),
             "created_version": VERSION,
             "render_models": locked_render_models(image_model_choice),
-            "style_locked": False,
-            "style_lock_image": None,
         },
         "audio_dna": None,
-        "cast": [
-            {"cast_id": str(uuid.uuid4()), "name": "", "role": "lead", "impact": 0.7, "description": "", "prompt_extra": "", "reference_images": []},
-            {"cast_id": str(uuid.uuid4()), "name": "", "role": "supporting", "impact": 0.5, "description": "", "prompt_extra": "", "reference_images": []},
-            {"cast_id": str(uuid.uuid4()), "name": "", "role": "extra", "impact": 0.1, "description": "", "prompt_extra": "", "reference_images": []}
-        ],
+        "cast": [],  # v1.8.3: Empty cast array - user uploads create entries
         "storyboard": {"sequences": [], "shots": []},
         "cast_matrix": {
             "character_refs": {},

@@ -45,7 +45,6 @@ from services.cast_service import (
     find_cast, cast_ref_urls, get_cast_refs_for_shot, get_lead_cast_ref,
     create_cast_visual_dna, update_cast_properties, update_cast_lora,
     delete_cast_from_state, set_character_refs, get_character_refs,
-    check_style_lock, get_style_lock_image, set_style_lock, clear_style_lock,
     get_scene_by_id, get_scene_for_shot, get_scene_decor_refs, get_scene_wardrobe,
     get_identity_url,
 )
@@ -379,16 +378,6 @@ def api_test_openai():
         return {"ok": True, "response": result}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
-
-# v1.6.1: Clear style lock
-@app.post("/api/project/{project_id}/clear_style_lock")
-def api_clear_style_lock(project_id: str):
-    """Clear style lock to allow re-rendering with different style."""
-    state = load_project(project_id)
-    state["project"]["style_locked"] = False
-    state["project"]["style_lock_image"] = None
-    save_project(state)
-    return {"style_locked": False, "style_lock_image": None}
 
 @app.post("/api/project/{project_id}/cast/lock")
 def api_lock_cast(project_id: str, payload: Dict[str,Any]):
@@ -879,8 +868,8 @@ def api_cast_delete(project_id: str, cast_id: str):
     return {"deleted": cast_id}
 
 @app.post("/api/project/{project_id}/cast/{cast_id}/canonical_refs")
-def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
-    """Generate both ref_a and ref_b for a cast member."""
+async def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
+    """v1.8.3: Generate both ref_a and ref_b in parallel (2x speedup)."""
     state = load_project(project_id)
     editor = locked_editor_key(state)
     require_key("FAL_KEY", FAL_KEY)
@@ -903,51 +892,56 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
     extra = cast.get("prompt_extra", "").strip()
     extra_prefix = f"{extra}, " if extra else ""
 
-    # v1.6.1: Style lock - use existing style anchor if present
-    style_lock_url = state["project"].get("style_lock_image")
+    # v1.8.3: REMOVED style lock from cast ref generation
+    # Style lock is ONLY for scene/shot rendering, NOT cast identity refs
+    # Cast refs must be pure character identity without style contamination
     ref_images = [refs[0]]
-    if style_lock_url:
-        # Upload style lock image to FAL if it's a local path
-        if style_lock_url.startswith("/renders/"):
-            local_file = resolve_render_path(style_lock_url)
-            if local_file.exists():
-                try:
-                    uploaded_style_lock = fal_client.upload_file(str(local_file))
-                    ref_images.append(uploaded_style_lock)
-                    print(f"[INFO] Using style lock image for consistency: {style_lock_url}")
-                except Exception as e:
-                    print(f"[WARN] Failed to upload style lock image: {e}")
-        else:
-            ref_images.append(style_lock_url)
-            print(f"[INFO] Using style lock image for consistency: {style_lock_url}")
-
-    # v1.7.0: Style consistency instruction - EXPLICIT: use style only, not the person
-    style_instruction = "USE THE SECOND REFERENCE IMAGE ONLY AS A STYLE GUIDE - match its artistic style, lighting, color palette, and atmosphere, but DO NOT include or blend any person or character from that second reference, " if style_lock_url else ""
+    style_instruction = ""  # No style lock instructions for cast refs
     
     prompt_a = f"{base_style}, {extra_prefix}{style_instruction}full body, standing, three-quarter view, slight angle, neutral pose, clean background, consistent identity, {negatives}"
     prompt_b = f"{base_style}, {extra_prefix}{style_instruction}portrait close-up, head and shoulders, three-quarter view, slight angle from side, neutral expression, clean background, consistent identity, {negatives}"
 
-    # v1.7.0: Generate refs and track costs
-    ref_a_url = call_img2img_editor(editor, prompt_a, ref_images, aspect, project_id, state=state)
+    # v1.8.3: Parallel generation with RENDER_SEMAPHORE (2x speedup)
+    async def gen_ref_a():
+        async with RENDER_SEMAPHORE:
+            return await asyncio.to_thread(
+                call_img2img_editor, editor, prompt_a, ref_images, aspect, project_id, state
+            )
+    
+    async def gen_ref_b():
+        async with RENDER_SEMAPHORE:
+            return await asyncio.to_thread(
+                call_img2img_editor, editor, prompt_b, ref_images, aspect, project_id, state
+            )
+    
+    # Parallel execution (8-12s instead of 16-24s)
+    ref_a_url, ref_b_url = await asyncio.gather(gen_ref_a(), gen_ref_b())
+    
+    # Track costs after generation
     track_cost(f"fal-ai/{editor}", 1, state=state, note="cast_ref_a")
-    ref_b_url = call_img2img_editor(editor, prompt_b, ref_images, aspect, project_id, state=state)
     track_cost(f"fal-ai/{editor}", 1, state=state, note="cast_ref_b")
 
-    # v1.6.1: Store locally with friendly names in project folder
+    # v1.8.3: Parallel download
     cast_name = sanitize_filename(cast.get("name", cast_id), 20)
-    ref_a = download_image_locally(ref_a_url, project_id, f"cast_{cast_id}_ref_a", state=state, friendly_name=f"Cast_{cast_name}_RefA")
-    ref_b = download_image_locally(ref_b_url, project_id, f"cast_{cast_id}_ref_b", state=state, friendly_name=f"Cast_{cast_name}_RefB")
+    
+    async def download_a():
+        return await asyncio.to_thread(
+            download_image_locally, ref_a_url, project_id, f"cast_{cast_id}_ref_a", state, f"Cast_{cast_name}_RefA"
+        )
+    
+    async def download_b():
+        return await asyncio.to_thread(
+            download_image_locally, ref_b_url, project_id, f"cast_{cast_id}_ref_b", state, f"Cast_{cast_name}_RefB"
+        )
+    
+    ref_a, ref_b = await asyncio.gather(download_a(), download_b())
 
     # v1.6.5: Thread-safe save with lock
     with get_project_lock(project_id):
         fresh_state = load_project(project_id)
         fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {})[cast_id] = {"ref_a": ref_a, "ref_b": ref_b}
 
-        # v1.6.1: Set style lock if this is the first generated ref
-        if not fresh_state["project"].get("style_lock_image"):
-            fresh_state["project"]["style_locked"] = True
-            fresh_state["project"]["style_lock_image"] = ref_a
-            print(f"[INFO] Style locked to first generated ref: {ref_a}")
+        # v1.8.3: NO style lock auto-set
 
         # v1.7.0: Track costs to fresh state (2 renders done, 2 separate entries)
         editor_cost = API_COSTS.get(f"fal-ai/{editor}", 0.04)
@@ -964,7 +958,6 @@ def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
         "editor": editor, 
         "ref_a": ref_a, 
         "ref_b": ref_b, 
-        "style_locked": fresh_state["project"].get("style_locked", False),
         "refs": {"ref_a": ref_a, "ref_b": ref_b}
     }
 
@@ -1013,12 +1006,9 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str, p
         ref_key = f"ref_{ref_type}"
         ref_to_use = ref_entry.get(ref_key)
 
-    # Fallback: use first uploaded reference image (legacy behavior)
+    # v1.8.3: REQUIRE canonical refs - no ORG-IMG fallback
     if not ref_to_use:
-        urls = cast_ref_urls(cast)
-        if not urls:
-            raise HTTPException(400, "Cast has no reference image")
-        ref_to_use = urls[0]
+        raise HTTPException(400, f"No canonical ref_{ref_type} found. Generate refs first via CREATE button.")
 
     # Build prompt according to whether an explicit edit_prompt was provided
     if edit_prompt:
@@ -2397,21 +2387,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
     # Collect reference images (convert local paths to full URLs for fal.ai)
     ref_images = []
     
-    # v1.6.1: Add style lock image for visual consistency
-    style_lock_url = state["project"].get("style_lock_image")
-    if style_lock_url:
-        if not style_lock_url.startswith("/renders/"):
-            ref_images.append(style_lock_url)
-        else:
-            # Upload local file to FAL
-            local_file = resolve_render_path(style_lock_url)
-            if local_file.exists():
-                try:
-                    uploaded_url = fal_client.upload_file(str(local_file))
-                    ref_images.append(uploaded_url)
-                    print(f"[INFO] Using style lock image for shot render")
-                except Exception as e:
-                    print(f"[WARN] Failed to upload style lock image: {e}")
+    # v1.8.3: NO style lock - pure cast + scene refs only
     
     # 1. Get scene decor_refs for this shot's sequence
     seq_id = shot.get("sequence_id")

@@ -11,11 +11,7 @@
       -> ORG-IMG Upload Bug Fix - (DONE)
       -> Thumbnail Cache Invalidation - (DONE)
 
-1.8.4 -> Optimalisatie CastMatrix (Queue Systeem)
-            -> Zie docs/CAST_MATRIX_OPTIMIZATIONS.md
-            -> Smart queueing: batch similar ref generations
-            -> Intelligent RENDER_SEMAPHORE utilization
-            -> Priority system (user-initiated > auto-batch)
+1.8.4 -> BUGFIX
       -> UI Overhoal
       -> Styles+Prompts masterfinetunen
       -> GPT1.5-Edit toevoegen
@@ -25,6 +21,11 @@
              Maar de oude MAG ni weg; daar zitten de helft vd renders... DUH  
              En Alles wat verspreid zit... ALLES IN PJCTMAP OOK Debugfiles
              Geen dubbele JSON onder prjocttitle en interne ID (Interne ID weg!!!)
+      -> Optimalisatie CastMatrix (Queue Systeem)
+            -> Zie docs/CAST_MATRIX_OPTIMIZATIONS.md
+            -> Smart queueing: batch similar ref generations
+            -> Intelligent RENDER_SEMAPHORE utilization
+            -> Priority system (user-initiated > auto-batch)       
       -> cost
 
 REFACTOR

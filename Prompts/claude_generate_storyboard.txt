@@ -12,7 +12,8 @@ Generate a complete storyboard as JSON ONLY.
 
 CONSTRAINTS:
 - Output MUST validate against the Storyboard schema:
-  - scenes[].scene_id, start, end, structure_type, energy, cast, visual_intent, camera_language, environment, symbolic_elements[], prompt_base
+  - REQUIRED: scenes[].scene_id, start, end, structure_type, energy, cast, visual_intent, camera_language, environment, symbolic_elements[], prompt_base
+  - OPTIONAL: scenes[].wardrobe, scenes[].decor_alt
 - Use AudioDNA.structure for timing blocks:
   - Create at least 1 scene per structure block.
   - You may split a structure block into multiple scenes ONLY if you keep timings within that block and do not exceed 8 total scenes per block.
@@ -21,6 +22,33 @@ CONSTRAINTS:
 - prompt_base must be model-friendly: describe content, not “instructions about prompts”.
 - Do not include any narration outside JSON.
 - No markdown, no code fences.
+
+WARDROBE & DECOR ENFORCEMENT:
+⚠️ CRITICAL: Use wardrobe field when outfits change between scenes.
+
+wardrobe field USAGE RULES:
+✓ REQUIRED SCENARIOS (you MUST include wardrobe):
+  - Scene in nightclub/party/formal event → "elegant evening gown", "designer suit with bow tie"
+  - Scene with work/uniform context → "police uniform", "hospital scrubs", "mechanic overalls"
+  - Costume/style shift from previous scene → "leather jacket and torn jeans", "vintage 1920s dress"
+  - Sport/activity wear → "boxing shorts and gloves", "yoga outfit", "swimsuit"
+  
+✓ EXAMPLES:
+  Scene A (office): wardrobe: "business suit, white shirt, tie"
+  Scene B (club): wardrobe: "sequined black dress, high heels" ← REQUIRED because outfit changed
+  Scene C (home): wardrobe: "casual t-shirt and sweatpants"
+  
+✗ WRONG: Describing outfits in prompt_base instead of wardrobe field
+✗ WRONG: Skipping wardrobe when scene context implies outfit change
+
+decor_alt field USAGE RULES:
+✓ USE WHEN: Same location, different visual treatment
+  - Time shifts: "night version with streetlights and neon"
+  - Crowd density: "packed dance floor with strobes"
+  - Lighting mood: "dimly lit with red ambient glow"
+  - Cleanliness: "abandoned and dusty version"
+  
+⚠️ REMEMBER: If wardrobe or decor_alt is set, NEVER repeat that description in prompt_base.
 
 STYLE GUIDANCE:
 - Follow PROJECT_STATE.project.style_preset and aspect.

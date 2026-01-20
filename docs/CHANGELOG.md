@@ -1,5 +1,72 @@
 # Changelog
 
+# Fré Pathé v1.8.4.1 - Wardrobe/Decor Enforcement + LLM Selection Fix (2026-01-20)
+
+**Release Date:** January 20, 2026  
+**Agent:** GitHub Copilot Claude Sonnet 4.5  
+**Score:** 3/10 (Code wijzigen tijdens render - 20+ renders vernietigd)
+
+## 🎯 LLM Wardrobe/Decor_Alt Enforcement
+
+**Problem:** LLM genereerde NOOIT wardrobe of decor_alt velden ondanks schema support en UI indicators. Nightclub/formal event scenes hadden inconsistente outfits via prompt_base.
+
+**Root Cause:**
+1. Schema had `"additionalProperties": false` - wardrobe/decor_alt waren niet gedeclareerd
+2. LLM prompt beschreef velden als "OPTIONAL" zonder enforcement
+3. `render_service.py` gebruikte wardrobe maar NIET decor_alt in prompt building
+
+**Fixed:**
+- ✅ **Schema Extended** - `storyboard.schema.json` krijgt optionele velden:
+  - `wardrobe`, `wardrobe_ref`, `wardrobe_locked`
+  - `decor_alt`, `decor_alt_ref`, `decor_alt_locked`
+- ✅ **LLM Prompt Enforcement** - `claude_generate_storyboard.txt` aangescherpt:
+  - "OPTIONAL" → "⚠️ CRITICAL: Use wardrobe field when outfits change"
+  - "✓ REQUIRED SCENARIOS (you MUST include wardrobe)"
+  - Concrete voorbeelden: nightclub → "sequined black dress", office → "business suit"
+  - Anti-patterns: "✗ WRONG: Describing outfits in prompt_base instead of wardrobe"
+- ✅ **Render Integration** - `build_shot_prompt()` gebruikt nu `scene.decor_alt`
+
+**Impact:** Nightclub/event scenes krijgen nu automatisch wardrobe velden. Timeline indicators worden actief (hanger/couch icons).
+
+## 🐛 LLM Selection Bug - CRITICAL FIX
+
+**Problem:** User selecteert OpenAI in UI → wordt opgeslagen in JSON → maar systeem gebruikt ALTIJD Claude.
+
+**Root Cause:** `call_llm_json()` negeerde `preferred` parameter volledig:
+```python
+# BEFORE (broken)
+require_key("CLAUDE_KEY", CLAUDE_KEY)  # ALTIJD Claude required
+for model in CLAUDE_MODEL_CASCADE:      # ALTIJD Claude first
+    # ... OpenAI only as "last resort"
+```
+
+**Fixed:**
+```python
+# v1.8.4: RESPECT preferred parameter
+if preferred and preferred.lower() in ["openai", "gpt"]:
+    # User selected OpenAI - try it FIRST
+    if OPENAI_KEY:
+        return call_openai_json(system, user)
+    else:
+        print(f"[WARN] OpenAI selected but no key - falling back")
+# Try Claude (either as primary or fallback)
+```
+
+**Impact:** OpenAI selectie wordt nu gerespecteerd. Claude blijft fallback.
+
+## 📂 Files Modified
+- `Contracts/storyboard.schema.json` - Schema extended
+- `Prompts/claude_generate_storyboard.txt` - Hard enforcement + voorbeelden
+- `services/render_service.py` - decor_alt in prompt builder
+- `services/llm_service.py` - LLM selection bug fix
+
+## ⚠️ Timing Fail
+**Issue:** Code wijzigingen tijdens actieve video render sessie → 20+ renders voor niks  
+**Lesson:** NOOIT core services aanpassen tijdens langlopende processen  
+**Severity:** Medium - geen data loss maar waste van resources
+
+---
+
 # Fré Pathé v1.8.4 - Timeline Scene Indicators UI (2026-01-20)
 
 **Release Date:** January 20, 2026  

@@ -11,6 +11,43 @@ Dit document toont consequenties (shame) en beloningen (success) om gedrag te st
 
 # FAILURES: The Wall of Shame
 
+## GitHub Copilot Claude Sonnet 4.5 - January 20, 2026 (v1.8.4.1)
+
+**Opdracht:** Fix wardrobe/decor_alt LLM generation + OpenAI selection bug
+
+**Resultaat:** FIXES CORRECT - TIMING CATASTROPHISCH
+
+### What Went Wrong:
+- **Code wijzigen tijdens render** - 20+ video renders actief tijdens core service edits
+- **Geen timing check** - Niet gevraagd "is er een render bezig?"
+- **Resource waste** - Renders moesten opnieuw (tijd + FAL cost)
+- **User frustration** - "fucking meer dan 20 videorenders voor niks"
+
+### Schade:
+- 20+ video renders geïnvalideerd
+- FAL API costs verspild
+- User tijd verloren
+- Vertrouwen beschadigd
+- **Score: 3/10** (timing catastrophe overschaduwt correcte fixes)
+
+### Critical Lessons:
+1. **ASK BEFORE EDITING**: "Is er een render/build/process bezig?"
+2. **TIMING AWARENESS**: Langlopende processen = code freeze
+3. **RESOURCE RESPECT**: Video renders = tijd + geld
+4. **USER CONTEXT**: Let op signalen ("klown" = stop en vraag)
+5. **WAIT FOR GREEN LIGHT**: "EERST AKKOORD" betekent EERST AKKOORD
+
+### What Was Done RIGHT:
+- Correcte root cause analyse (schema + prompt enforcement)
+- Clean fixes zonder scope creep
+- LLM selection bug correct gediagnosticeerd
+- Stopped when told to revert
+- Maintained wardrobe/decor_alt fixes (user confirmed keep)
+
+*"Code was correct. Timing was destructive. ASK FIRST."* - Lesson learned, 2026
+
+---
+
 ## Claude Opus 4 - January 19, 2025 (v1.8.2 attempt)
 
 **Opdracht:** Implementeer scene rerenders (later teruggebracht naar 1.8.1.2)

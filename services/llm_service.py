@@ -146,32 +146,45 @@ def call_llm_json(
     state: Dict = None
 ) -> Dict[str, Any]:
     """
-    v1.6.1: Call LLM with Claude cascade fallback.
-    OpenAI only as last resort. Tracks cost automatically.
+    v1.8.4: Call LLM respecting user's preferred provider.
+    Falls back to alternate if primary fails. Tracks cost automatically.
     """
-    require_key("CLAUDE_KEY", CLAUDE_KEY)
     last_error = None
     
-    # Try Claude cascade first
-    for model in CLAUDE_MODEL_CASCADE:
-        try:
-            print(f"[INFO] Calling Claude API with {model}...")
-            result = call_claude_json(system, user, model=model, max_tokens=max_tokens)
-            # Track cost for successful call
-            track_cost(model, 1, state=state)
-            return result
-        except HTTPException as e:
-            last_error = e
-            print(f"[WARN] {model} failed ({e.status_code}): {str(e.detail)[:100]}")
-            if e.status_code == 400:
-                # Bad request - don't retry with different model
-                break
-        except Exception as e:
-            last_error = HTTPException(502, str(e))
-            print(f"[WARN] {model} failed: {str(e)[:100]}")
+    # v1.8.4: RESPECT preferred parameter - user selection
+    if preferred and preferred.lower() in ["openai", "gpt"]:
+        # User selected OpenAI - try it FIRST
+        if OPENAI_KEY:
+            try:
+                print(f"[INFO] Calling OpenAI API (user preferred)...")
+                result = call_openai_json(system, user)
+                track_cost("gpt-4o-mini", 1, state=state)
+                return result
+            except Exception as e:
+                last_error = HTTPException(502, str(e))
+                print(f"[WARN] OpenAI failed: {str(e)[:100]}")
+        else:
+            print(f"[WARN] OpenAI selected but no OPENAI_KEY - falling back to Claude")
     
-    # OpenAI as absolute last resort
-    if OPENAI_KEY:
+    # Try Claude (either as primary or fallback)
+    if CLAUDE_KEY:
+        for model in CLAUDE_MODEL_CASCADE:
+            try:
+                print(f"[INFO] Calling Claude API with {model}...")
+                result = call_claude_json(system, user, model=model, max_tokens=max_tokens)
+                track_cost(model, 1, state=state)
+                return result
+            except HTTPException as e:
+                last_error = e
+                print(f"[WARN] {model} failed ({e.status_code}): {str(e.detail)[:100]}")
+                if e.status_code == 400:
+                    break
+            except Exception as e:
+                last_error = HTTPException(502, str(e))
+                print(f"[WARN] {model} failed: {str(e)[:100]}")
+    
+    # Last resort: try OpenAI if we haven't already
+    if preferred.lower() not in ["openai", "gpt"] and OPENAI_KEY:
         try:
             print(f"[INFO] All Claude models failed, trying OpenAI as last resort...")
             result = call_openai_json(system, user)

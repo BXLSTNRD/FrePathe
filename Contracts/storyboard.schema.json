@@ -52,6 +52,14 @@
 
           "prompt_base": { "type": "string", "minLength": 1 },
 
+          "wardrobe": { "type": "string" },
+          "wardrobe_ref": { "type": "string" },
+          "wardrobe_locked": { "type": "boolean", "default": false },
+          
+          "decor_alt": { "type": "string" },
+          "decor_alt_ref": { "type": "string" },
+          "decor_alt_locked": { "type": "boolean", "default": false },
+
           "user_notes": { "type": "string" },
 
           "render": {

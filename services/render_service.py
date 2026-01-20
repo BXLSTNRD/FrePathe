@@ -346,6 +346,10 @@ def build_shot_prompt(
     elif scene and scene.get("wardrobe"):
         prompt_parts.append(scene["wardrobe"])
     
+    # 7b. Decor alternative from scene
+    if scene and scene.get("decor_alt"):
+        prompt_parts.append(scene["decor_alt"])
+    
     # 8. Standard quality tokens
     prompt_parts.extend(["high quality", "detailed", "consistent identity"])
     

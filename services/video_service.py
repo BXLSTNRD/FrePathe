@@ -323,10 +323,13 @@ def generate_shot_video(
     # Calculate duration
     start = float(shot.get("start", 0))
     end = float(shot.get("end", 0))
-    duration = end - start
+    target_duration = end - start  # Storyboard timing (for audio sync)
     
-    if duration <= 0:
-        raise ValueError(f"Shot {shot.get('shot_id')} has invalid duration: {duration}")
+    if target_duration <= 0:
+        raise ValueError(f"Shot {shot.get('shot_id')} has invalid duration: {target_duration}")
+    
+    # Duration for generation (will be clamped to model limits)
+    duration = target_duration
     
     # Build motion prompt from shot metadata
     motion_prompt = build_shot_motion_prompt(shot)
@@ -385,7 +388,8 @@ def generate_shot_video(
     shot["render"]["video"] = {
         "video_url": video_url,
         "local_path": local_path,
-        "duration": video_result["duration"],
+        "duration": video_result["duration"],  # Actual generated duration (model-clamped)
+        "target_duration": target_duration,      # Storyboard duration (for audio sync trimming)
         "model": video_result["model"],
         "has_audio": video_result["has_audio"],
         "generated_at": now_iso(),

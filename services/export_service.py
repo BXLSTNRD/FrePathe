@@ -456,10 +456,44 @@ def export_video_with_img2vid(
         print(f"[IMG2VID] Concatenating {len(video_clips)} clips (total {total_duration:.1f}s)...")
         update_export_status(project_id, "processing", total_shots, total_shots, f"Concatenating {len(video_clips)} video clips...")
         
+        # Speed-adjust clips to match storyboard duration for audio sync
+        adjusted_clips = []
+        for i, clip in enumerate(video_clips):
+            video_data = clip["shot"].get("render", {}).get("video", {})
+            actual_dur = video_data.get("duration", 0)
+            target_dur = video_data.get("target_duration") or clip["duration"]
+            
+            # Speed adjust if durations don't match (tolerance 0.1s)
+            if actual_dur > 0 and abs(actual_dur - target_dur) > 0.1:
+                speed_factor = actual_dur / target_dur  # >1 = speedup, <1 = slowdown
+                adjusted_path = temp_dir / f"adjusted_{i:03d}.mp4"
+                
+                # Use setpts for video speed, atempo for audio (if present)
+                # setpts=PTS/speed makes video faster when speed>1
+                speed_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", str(clip["path"]),
+                    "-filter:v", f"setpts=PTS/{speed_factor}",
+                    "-filter:a", f"atempo={speed_factor}" if speed_factor <= 2.0 else f"atempo=2.0,atempo={speed_factor/2.0}",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:a", "aac",
+                    str(adjusted_path)
+                ]
+                result = subprocess.run(speed_cmd, capture_output=True)
+                if result.returncode == 0:
+                    action = "sped up" if speed_factor > 1 else "slowed down"
+                    print(f"[IMG2VID] {clip['shot'].get('shot_id')} {action} {speed_factor:.2f}x: {actual_dur:.1f}s → {target_dur:.1f}s")
+                    adjusted_clips.append(adjusted_path)
+                else:
+                    print(f"[WARN] Speed adjust failed for {clip['shot'].get('shot_id')}, using original")
+                    adjusted_clips.append(clip["path"])
+            else:
+                adjusted_clips.append(clip["path"])
+        
         concat_file = temp_dir / "concat.txt"
         with open(concat_file, "w") as f:
-            for clip in video_clips:
-                clip_path_str = str(clip["path"]).replace("\\", "/")
+            for clip_path in adjusted_clips:
+                clip_path_str = str(clip_path).replace("\\", "/")
                 f.write(f"file '{clip_path_str}'\n")
         
         # Step 3: Concat videos and add/mix audio

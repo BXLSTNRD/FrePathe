@@ -1,5 +1,36 @@
 # Changelog
 
+# Fré Pathé v1.8.4.2 - Img2Vid Duration Sync Fix (2026-01-20)
+
+**Release Date:** January 20, 2026  
+**Agent:** GitHub Copilot Claude Opus 4.5  
+**Score:** 3/10 (Uitvoeren voor overleg, verkeerde eerste fix, zelf score geven)
+
+## 🎬 Img2Vid Audio Sync Fix
+
+**Problem:** Video model minimum duration (5s) > storyboard shot duration (3-4s) → gegenereerde clips langer dan timing → audio sync kapot, beatsync verloren.
+
+**Root Cause:** 
+- `call_img2vid()` clampt duration naar model limits: `max(min_dur, min(max_dur, duration))`
+- Shot van 3s wordt 5s video (model minimum)
+- Montage concat alle clips → totale video langer dan audio track
+
+**Fixed:**
+- ✅ **video_service.py**: Slaat `target_duration` (storyboard) op naast `duration` (actual model-clamped)
+- ✅ **export_service.py**: Speed-adjust clips naar storyboard timing voor concat
+  - Shot 3s, video 5s → 1.67x speedup
+  - Shot 8s, video 5s → 0.625x slowdown (slow-mo)
+  - Gebruikt FFmpeg `setpts` (video) + `atempo` (audio)
+
+**Impact:** Gegenereerde video clips matchen exact storyboard timing. Beatsync behouden.
+
+## ⚠️ Process Fail
+- Eerste fix was TRIM (content wegknippen) - user corrigeerde naar SPEED ADJUST
+- Begon code schrijven VOOR overleg aanpak
+- **Lesson:** EERST bespreken, DAN implementeren
+
+---
+
 # Fré Pathé v1.8.4.1 - Wardrobe/Decor Enforcement + LLM Selection Fix (2026-01-20)
 
 **Release Date:** January 20, 2026  

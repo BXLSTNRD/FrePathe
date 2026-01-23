@@ -56,9 +56,26 @@ Opening old project + SAVE = automatic migration:
    - Fixed: Now searches `PROJECT_STATES` for project_location
 4. **Legacy `/renders/` endpoint 404s**: Files in `data/renders/` weren't found
    - Fixed: `serve_file()` now also checks `workspace_root/renders/` subdir for legacy renders
+5. **Global `from_url()` path resolution**: All endpoints using `PATH_MANAGER.from_url()` couldn't find files in migrated projects
+   - URLs like `/files/Cast_Name_RefB.png` looked in `workspace_root/` not `project_location/renders/`
+   - **ROOT FIX**: `from_url(url, state)` now accepts optional state parameter
+   - Added `_find_in_project()` helper that checks: exact path → renders/ → video/ → audio/ → root
+   - Updated all callers in main.py, render_service.py, video_service.py, export_service.py
+   - Also: `resolve_render_path(url, state)` now passes state
+   - Also: All `/renders/` and `/files/` checks now cover BOTH URL formats
+6. **CRITICAL: Migration gathered wrong projects!** New project "No exc" imported assets from old "No Excuses" project
+   - `_gather_referenced_assets()` was matching folders by TITLE (substring match)
+   - **FIX**: Now ONLY matches by UUID (first 8 chars of project ID)
+   - Never matches by title anymore - prevents cross-project contamination
+   - New projects with no UUID get empty legacy_folders = no migration
+7. **Save failed: 'NoneType' object has no attribute 'get'**
+   - `audio_dna` was `None` in new projects, not empty dict `{}`
+   - Code like `state.get("audio_dna", {}).get("source_url")` returns None.get() error
+   - **FIX**: Changed `"audio_dna": None` → `"audio_dna": {}` in `new_project()`
+   - Also added defensive `or {}` checks in `_gather_referenced_assets` and `_update_state_paths`
 
 **Files Changed:**
-- `services/path_service.py` - PathManager now respects `project_location`
+- `services/path_service.py` - PathManager now respects `project_location`, `from_url()` accepts `state`
 - `services/project_service.py` - `save_project()` saves ONLY to project_location, no stub files
 - `main.py`:
   - `PROJECT_STATES` dict for in-memory new projects

@@ -617,7 +617,7 @@ def new_project(
             "created_version": VERSION,
             "render_models": locked_render_models(image_model_choice),
         },
-        "audio_dna": None,
+        "audio_dna": {},  # v1.8.5: Empty dict, not None - prevents .get() errors
         "cast": [],  # v1.8.3: Empty cast array - user uploads create entries
         "storyboard": {"sequences": [], "shots": []},
         "cast_matrix": {

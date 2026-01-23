@@ -195,9 +195,11 @@ class PathManager:
             # Return as /files/ anyway
             return f"/files/{filesystem_path.name}"
     
-    def from_url(self, url: str) -> Path:
+    def from_url(self, url: str, state: Optional[Dict[str, Any]] = None) -> Path:
         """
         Convert URL path back to filesystem path.
+        
+        v1.8.5: Now accepts optional state to check project folder for migrated projects.
         
         Example:
             /files/projects/Movie_v1.8.0/renders/cast_1.png
@@ -205,6 +207,7 @@ class PathManager:
         
         Args:
             url: URL path string
+            state: Optional project state - if provided, also checks project folder
         
         Returns:
             Absolute filesystem path
@@ -214,7 +217,15 @@ class PathManager:
         """
         if url.startswith("/files/"):
             rel_path = url.replace("/files/", "", 1)
-            return self.workspace_root / rel_path
+            workspace_path = self.workspace_root / rel_path
+            
+            # v1.8.5: If not found at workspace_root and state provided, check project folder
+            if not workspace_path.exists() and state:
+                project_path = self._find_in_project(rel_path, state)
+                if project_path:
+                    return project_path
+            
+            return workspace_path
         elif url.startswith("/renders/"):
             # Legacy support - /renders/filename.png maps to workspace_root/renders/filename.png
             rel_path = url.replace("/renders/", "", 1)
@@ -226,6 +237,13 @@ class PathManager:
             renders_path = self.workspace_root / "renders" / rel_path
             if renders_path.exists():
                 return renders_path
+            
+            # v1.8.5: Also check project folder for migrated projects
+            if state:
+                project_path = self._find_in_project(rel_path, state)
+                if project_path:
+                    return project_path
+            
             # Return direct path as default (will 404 if not found)
             return direct_path
         elif url.startswith("http://") or url.startswith("https://"):
@@ -233,6 +251,34 @@ class PathManager:
             raise ValueError(f"Cannot convert external URL to filesystem path: {url}")
         else:
             raise ValueError(f"Invalid URL format: {url}")
+    
+    def _find_in_project(self, rel_path: str, state: Dict[str, Any]) -> Optional[Path]:
+        """
+        v1.8.5: Try to find a file in the project folder.
+        Checks multiple locations: exact path, renders/, video/, audio/, root.
+        
+        Args:
+            rel_path: Relative path or filename to find
+            state: Project state with project_location
+        
+        Returns:
+            Path if found, None otherwise
+        """
+        project_folder = self.get_project_folder(state)
+        filename = Path(rel_path).name
+        
+        # Try exact relative path first
+        exact_path = project_folder / rel_path
+        if exact_path.exists():
+            return exact_path
+        
+        # Try in common subdirectories
+        for subdir in ["renders", "video", "audio", ""]:
+            check_path = project_folder / subdir / filename if subdir else project_folder / filename
+            if check_path.exists():
+                return check_path
+        
+        return None
     
     # ========= Temp File Management =========
     

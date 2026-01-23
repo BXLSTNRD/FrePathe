@@ -291,12 +291,12 @@ def call_img2img_editor(
 
 # ========= Render Path Resolution =========
 
-def resolve_render_path(url_or_path: str) -> Path:
+def resolve_render_path(url_or_path: str, state: Optional[Dict[str, Any]] = None) -> Path:
     """Resolve /renders/ URL or path to actual file path."""
-    # v1.8.0: Use PATH_MANAGER to resolve URLs to filesystem paths
+    # v1.8.5: Use PATH_MANAGER with state for migrated project paths
     if url_or_path.startswith("/"):
         # It's a URL path - use PATH_MANAGER to convert
-        return PATH_MANAGER.from_url(url_or_path)
+        return PATH_MANAGER.from_url(url_or_path, state)
     else:
         # It's a relative path - resolve relative to workspace root
         return PATH_MANAGER.workspace_root / url_or_path
@@ -390,7 +390,9 @@ def upload_local_ref_to_fal(url: str, state: Optional[Dict[str, Any]] = None) ->
     # Local /files/ path needs upload
     if url.startswith("/files/"):
         try:
-            local_path = PATH_MANAGER.from_url(url)
+            # v1.8.5: from_url now checks project folder when state provided
+            local_path = PATH_MANAGER.from_url(url, state)
+            
             if not local_path.exists():
                 print(f"[WARN] Ref image not found: {local_path}")
                 return url

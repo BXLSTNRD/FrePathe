@@ -126,13 +126,14 @@ def concat_clips_with_audio(
 
 # ========= Video Export =========
 
-def resolve_image_path(img_url: str) -> Optional[Path]:
+def resolve_image_path(img_url: str, state: Optional[Dict[str, Any]] = None) -> Optional[Path]:
     """
-    v1.8.0: Resolve render URL to file path using PATH_MANAGER.
+    v1.8.5: Resolve render URL to file path using PATH_MANAGER.
+    Now accepts state for migrated project path resolution.
     """
     if img_url.startswith("/"):
-        # URL path - convert using PATH_MANAGER
-        img_path = PATH_MANAGER.from_url(img_url)
+        # URL path - convert using PATH_MANAGER with state for project folder lookup
+        img_path = PATH_MANAGER.from_url(img_url, state)
     else:
         # Absolute path
         img_path = Path(img_url)
@@ -417,8 +418,9 @@ def export_video_with_img2vid(
                 print(f"[IMG2VID] Collecting video for {shot_id}")
                 
                 # Resolve to local path - handle both /files/ URLs and absolute paths
-                if video_url.startswith("/files/"):
-                    video_path = PATH_MANAGER.from_url(video_url)
+                if video_url.startswith("/files/") or video_url.startswith("/renders/"):
+                    # v1.8.5: Pass state for migrated project path resolution
+                    video_path = PATH_MANAGER.from_url(video_url, state)
                 elif Path(video_url).is_absolute():
                     video_path = Path(video_url)
                 else:

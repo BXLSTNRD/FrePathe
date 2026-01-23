@@ -128,42 +128,51 @@ def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
     """
     v1.8.5: LAZY MIGRATION - Find actual asset files in legacy locations.
     
+    CRITICAL: Only match folders by UUID, NEVER by title!
+    Title matching caused assets from other projects with similar names to be gathered.
+    
     TWO-PHASE APPROACH:
     1. Resolve URLs from state (renders, audio referenced in JSON)
-    2. SCAN legacy folders for ALL assets (including orphaned videos not in JSON)
+    2. SCAN legacy folders (UUID-matched only) for orphaned videos not in JSON
     
     Returns dict with 'renders', 'audio', 'video', 'llm' lists of Path objects.
     """
     result = {"renders": [], "audio": [], "video": [], "llm": []}
     
-    pid = state.get("project", {}).get("id", "")
-    title = state.get("project", {}).get("title", "")
-    safe_title = sanitize_filename(title, 30) if title else ""
+    # Defensive: handle None state
+    if not state:
+        print("[GATHER] WARNING: state is None, returning empty result")
+        return result
     
-    # Build list of legacy folders to scan
+    pid = state.get("project", {}).get("id", "") if state.get("project") else ""
+    title = state.get("project", {}).get("title", "") if state.get("project") else ""
+    
+    # Build list of legacy folders to scan - ONLY UUID MATCHING
     legacy_folders = []
     
-    # 1. Current project_location (if set)
+    # 1. Current project_location (if set and exists)
     if state.get("project", {}).get("project_location"):
-        legacy_folders.append(Path(state["project"]["project_location"]))
+        loc = Path(state["project"]["project_location"])
+        if loc.exists():
+            legacy_folders.append(loc)
     
-    # 2. Scan for ALL matching folders in data/projects/
-    projects_dir = PATH_MANAGER.workspace_root / "projects"
-    if projects_dir.exists():
-        for folder in projects_dir.iterdir():
-            if folder.is_dir():
-                folder_lower = folder.name.lower().replace("_", " ").replace("-", " ")
-                title_lower = title.lower().replace("_", " ").replace("-", " ") if title else ""
-                safe_lower = safe_title.lower().replace("_", " ")
-                
-                # Match by title (various formats) or UUID
-                if (title_lower and title_lower[:15] in folder_lower) or \
-                   (safe_lower and safe_lower[:15] in folder_lower) or \
-                   (pid and pid[:8] in folder.name):
+    # 2. Scan for folders in data/projects/ that contain THIS project's UUID
+    # NEVER match by title - that's what caused cross-project contamination!
+    if pid:
+        projects_dir = PATH_MANAGER.workspace_root / "projects"
+        if projects_dir.exists():
+            for folder in projects_dir.iterdir():
+                if folder.is_dir() and pid[:8] in folder.name:
                     if folder not in legacy_folders:
                         legacy_folders.append(folder)
+        
+        # 3. Also check data/renders/ for UUID-prefixed files
+        renders_dir = PATH_MANAGER.workspace_root / "renders"
+        if renders_dir.exists() and renders_dir not in legacy_folders:
+            # Don't add whole folder, but we'll scan for UUID-prefixed files later
+            pass
     
-    print(f"[GATHER] Scanning {len(legacy_folders)} legacy folders for project '{title}'")
+    print(f"[GATHER] Scanning {len(legacy_folders)} legacy folders for project UUID '{pid[:8] if pid else 'NEW'}'")
     for f in legacy_folders:
         print(f"[GATHER]   - {f.name}")
     
@@ -180,13 +189,20 @@ def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
             full_path = PATH_MANAGER.workspace_root / rel_path
             if full_path.exists():
                 return full_path
-            # Also try just the filename in all legacy folders
+            # Also try just the filename in UUID-matched legacy folders
             filename = Path(url).name
             for folder in legacy_folders:
                 for subdir in ["renders", "video", "audio", ""]:
                     candidate = folder / subdir / filename if subdir else folder / filename
                     if candidate.exists():
                         return candidate
+            # Also check data/renders/ for UUID-prefixed files (legacy format: {uuid}_{filename}.png)
+            if pid:
+                renders_dir = PATH_MANAGER.workspace_root / "renders"
+                if renders_dir.exists():
+                    for f in renders_dir.glob(f"{pid[:8]}*"):
+                        if f.name.endswith(filename) or filename in f.name:
+                            return f
         
         # Try /files/... format
         if url.startswith("/files/"):
@@ -194,6 +210,13 @@ def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
             full_path = PATH_MANAGER.workspace_root / rel_path
             if full_path.exists():
                 return full_path
+            # Also check in UUID-matched legacy folders
+            filename = Path(url).name
+            for folder in legacy_folders:
+                for subdir in ["renders", "video", "audio", ""]:
+                    candidate = folder / subdir / filename if subdir else folder / filename
+                    if candidate.exists():
+                        return candidate
         
         # Try as absolute path
         if Path(url).is_absolute() and Path(url).exists():
@@ -245,8 +268,9 @@ def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
             if path and path not in result["renders"]:
                 result["renders"].append(path)
     
-    # Gather audio (by URL)
-    audio_url = state.get("audio_dna", {}).get("source_url")
+    # Gather audio (by URL) - audio_dna can be None, not just empty dict
+    audio_dna = state.get("audio_dna") or {}
+    audio_url = audio_dna.get("source_url")
     if audio_url:
         path = resolve_url_to_path(audio_url)
         if path and path not in result["audio"]:
@@ -417,7 +441,8 @@ def _update_state_paths(state: Dict[str, Any], new_project_folder: Path, gathere
             scene["wardrobe_ref"] = update_url(scene["wardrobe_ref"], "render")
     
     # Update audio - also link orphaned audio if source_url is empty
-    if state.get("audio_dna", {}).get("source_url"):
+    audio_dna = state.get("audio_dna") or {}
+    if audio_dna.get("source_url"):
         state["audio_dna"]["source_url"] = update_url(state["audio_dna"]["source_url"], "audio")
     elif gathered_audio and len(gathered_audio) > 0:
         # Link first orphaned audio file to audio_dna
@@ -459,8 +484,8 @@ def _generate_wardrobe_ref_internal(project_id: str, scene_id: str, state: Dict,
     
     # Upload ref if local
     ref_url = ref_a
-    if ref_a.startswith("/renders/"):
-        local_file = resolve_render_path(ref_a)
+    if ref_a.startswith("/renders/") or ref_a.startswith("/files/"):
+        local_file = resolve_render_path(ref_a, state)
         if local_file.exists():
             ref_url = fal_client.upload_file(str(local_file))
     
@@ -1969,8 +1994,8 @@ def api_castmatrix_edit_decor_alt(project_id: str, scene_id: str, payload: Dict[
         raise HTTPException(400, "Scene has no alt decor to edit")
     
     # Upload current image as reference
-    if current_image.startswith("/renders/"):
-        local_file = PATH_MANAGER.from_url(current_image)
+    if current_image.startswith("/renders/") or current_image.startswith("/files/"):
+        local_file = PATH_MANAGER.from_url(current_image, state)
         if local_file.exists():
             uploaded_url = fal_client.upload_file(str(local_file))
         else:
@@ -1983,7 +2008,7 @@ def api_castmatrix_edit_decor_alt(project_id: str, scene_id: str, payload: Dict[
     image_refs = [uploaded_url]
     if ref_image:
         if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
-            ref_file = PATH_MANAGER.from_url(ref_image)
+            ref_file = PATH_MANAGER.from_url(ref_image, state)
             if ref_file.exists():
                 image_refs.append(fal_client.upload_file(str(ref_file)))
         else:
@@ -2048,8 +2073,8 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
         raise HTTPException(400, "Scene has no image to edit")
     
     # Upload current image as reference
-    if current_image.startswith("/renders/"):
-        local_file = PATH_MANAGER.from_url(current_image)
+    if current_image.startswith("/renders/") or current_image.startswith("/files/"):
+        local_file = PATH_MANAGER.from_url(current_image, state)
         if local_file.exists():
             uploaded_url = fal_client.upload_file(str(local_file))
         else:
@@ -2062,7 +2087,7 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
     image_refs = [uploaded_url]
     if ref_image:
         if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
-            ref_file = PATH_MANAGER.from_url(ref_image)
+            ref_file = PATH_MANAGER.from_url(ref_image, state)
             if ref_file.exists():
                 image_refs.append(fal_client.upload_file(str(ref_file)))
         else:
@@ -2226,8 +2251,8 @@ def api_castmatrix_edit_wardrobe(project_id: str, scene_id: str, payload: Dict[s
         raise HTTPException(400, "Scene has no wardrobe to edit")
     
     # Upload current image as reference
-    if current_image.startswith("/renders/"):
-        local_file = PATH_MANAGER.from_url(current_image)
+    if current_image.startswith("/renders/") or current_image.startswith("/files/"):
+        local_file = PATH_MANAGER.from_url(current_image, state)
         if local_file.exists():
             uploaded_url = fal_client.upload_file(str(local_file))
         else:
@@ -2240,18 +2265,7 @@ def api_castmatrix_edit_wardrobe(project_id: str, scene_id: str, payload: Dict[s
     image_refs = [uploaded_url]
     if ref_image:
         if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
-            ref_file = PATH_MANAGER.from_url(ref_image)
-            if ref_file.exists():
-                image_refs.append(fal_client.upload_file(str(ref_file)))
-        else:
-            image_refs.append(ref_image)
-    
-    # v1.8.1.2: Check for additional reference image (from + button)
-    ref_image = payload.get("ref_image", "").strip()
-    image_refs = [uploaded_url]
-    if ref_image:
-        if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
-            ref_file = PATH_MANAGER.from_url(ref_image)
+            ref_file = PATH_MANAGER.from_url(ref_image, state)
             if ref_file.exists():
                 image_refs.append(fal_client.upload_file(str(ref_file)))
         else:
@@ -2390,9 +2404,11 @@ def api_build_sequences(project_id: str, payload: Dict[str,Any]):
     beat_grid = build_beat_grid(float(duration_sec or 180.0), int(bpm) if bpm else None)
 
     # Extract story and lyrics info
-    story_arc = state.get("audio_dna", {}).get("story_arc", {})
-    lyrics = state.get("audio_dna", {}).get("lyrics", [])
-    structure = state.get("audio_dna", {}).get("structure", [])
+    # audio_dna can be None, not just empty dict
+    audio_dna = state.get("audio_dna") or {}
+    story_arc = audio_dna.get("story_arc", {})
+    lyrics = audio_dna.get("lyrics", [])
+    structure = audio_dna.get("structure", [])
     
     # Build cast info with roles
     cast_info = []
@@ -2981,10 +2997,10 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
             # Add decor ref
             decor_refs = scene.get("decor_refs") or []
             for dref in decor_refs[:1]:  # Use first scene render
-                if dref and not dref.startswith("/renders/"):
+                if dref and not dref.startswith("/renders/") and not dref.startswith("/files/"):
                     ref_images.append(dref)
-                elif dref and dref.startswith("/renders/"):
-                    local_file = resolve_render_path(dref)
+                elif dref and (dref.startswith("/renders/") or dref.startswith("/files/")):
+                    local_file = resolve_render_path(dref, state)
                     if local_file.exists():
                         try:
                             uploaded_url = fal_client.upload_file(str(local_file))
@@ -2996,11 +3012,11 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
             # v1.7.0: Add wardrobe_ref for outfit consistency
             wardrobe_ref = scene.get("wardrobe_ref")
             if wardrobe_ref:
-                if not wardrobe_ref.startswith("/renders/"):
+                if not wardrobe_ref.startswith("/renders/") and not wardrobe_ref.startswith("/files/"):
                     ref_images.append(wardrobe_ref)
                     print(f"[INFO] Added wardrobe ref (external URL)")
                 else:
-                    local_file = resolve_render_path(wardrobe_ref)
+                    local_file = resolve_render_path(wardrobe_ref, state)
                     if local_file.exists():
                         try:
                             uploaded_url = fal_client.upload_file(str(local_file))
@@ -3031,11 +3047,11 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
             
         print(f"[DEBUG] Cast {cast_id} {ref_key} URL: {ref_url[:60]}...")
         
-        if not ref_url.startswith("/renders/"):
+        if not ref_url.startswith("/renders/") and not ref_url.startswith("/files/"):
             ref_images.append(ref_url)
             print(f"[INFO] Using external URL for cast {cast_id}")
         else:
-            local_file = resolve_render_path(ref_url)
+            local_file = resolve_render_path(ref_url, state)
             if local_file.exists():
                 try:
                     uploaded_url = fal_client.upload_file(str(local_file))
@@ -3162,8 +3178,8 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     image_refs = []
     
     # 1. Upload current render as primary reference
-    if current_render_url.startswith("/renders/"):
-        local_file = PATH_MANAGER.from_url(current_render_url)
+    if current_render_url.startswith("/renders/") or current_render_url.startswith("/files/"):
+        local_file = PATH_MANAGER.from_url(current_render_url, state)
         if local_file.exists():
             uploaded_url = fal_client.upload_file(str(local_file))
             image_refs.append(uploaded_url)
@@ -3175,7 +3191,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     # 2. Optional reference from + button (same as scenes)
     if ref_image:
         if ref_image.startswith("/renders/") or ref_image.startswith("/files/"):
-            ref_file = PATH_MANAGER.from_url(ref_image)
+            ref_file = PATH_MANAGER.from_url(ref_image, state)
             if ref_file.exists():
                 image_refs.append(fal_client.upload_file(str(ref_file)))
         else:
@@ -3379,9 +3395,9 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
         
         for i, shot in enumerate(rendered_shots):
             img_url = shot["render"]["image_url"]
-            # v1.8: Use PATH_MANAGER.from_url() for all /files/ and /renders/ URLs
+            # v1.8.5: Use PATH_MANAGER.from_url() with state for migrated projects
             if img_url.startswith("/files/") or img_url.startswith("/renders/"):
-                img_path = PATH_MANAGER.from_url(img_url)
+                img_path = PATH_MANAGER.from_url(img_url, state)
             else:
                 # Handle absolute paths or relative paths
                 img_path = Path(img_url) if Path(img_url).is_absolute() else PATH_MANAGER.workspace_root / img_url

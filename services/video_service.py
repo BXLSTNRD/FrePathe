@@ -104,8 +104,8 @@ def upload_image_to_fal(image_url: str, state: Optional[Dict[str, Any]] = None) 
     # Convert /files/ URL to absolute path if needed
     original_url = image_url  # Store for cache key
     if image_url.startswith("/files/") or image_url.startswith("/renders/"):
-        # Use PATH_MANAGER.from_url() for proper conversion
-        image_path = PATH_MANAGER.from_url(image_url)
+        # v1.8.5: Use PATH_MANAGER.from_url() with state for migrated projects
+        image_path = PATH_MANAGER.from_url(image_url, state)
         if not image_path.exists():
             raise Exception(f"Image file not found: {image_path}")
         image_url = str(image_path)

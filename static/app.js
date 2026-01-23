@@ -379,26 +379,42 @@ async function updateProjectStyle(newStyle) {
 async function saveProjectToFile() {
   try {
     await ensureProject();
-    setStatus("Preparing save…", null);
-    const state = await apiCall(`/api/project/${pid()}`);
+    setStatus("Opening folder picker…", null);
     
-    const title = (state.project?.title || "project").replace(/[^a-z0-9]/gi, "_");
-    const filename = `BXLSTNRD_${title}_${pid().slice(0, 8)}.json`;
+    // v1.8.5: Server opens native folder picker, creates project folder, saves everything there
+    const result = await apiCall(`/api/project/${pid()}/save-to-folder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
     
-    // Use traditional download (works everywhere)
-    // Modern file pickers don't give us full path in browser
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (result.project_location) {
+      document.getElementById("projectLocation").value = result.project_location;
+      setStatus(`Project saved to: ${result.project_location}`, 100);
+      
+      // Reload project to get updated state
+      PROJECT_STATE = await apiCall(`/api/project/${pid()}`);
+      updateUI();
+    } else if (result.cancelled) {
+      setStatus("Save cancelled", 100);
+    } else {
+      setStatus("Save failed", 100);
+    }
     
-    setStatus("Project saved - LOAD the file to set location", 100);
   } catch (e) {
     showError(e.message);
   }
+}
+
+function fallbackDownload(state, filename) {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+  setStatus("Project downloaded - use LOAD to restore", 100);
 }
 
 function loadProjectFromFile() {

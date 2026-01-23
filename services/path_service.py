@@ -1,5 +1,14 @@
 # Fré Pathé Services - Path Management
-# v1.8.0: Centralized path management with user-configurable workspace
+# v1.8.5: User-controlled project locations - NO MORE /data/projects chaos
+#
+# NEW STRUCTURE:
+# {USER_LOCATION}/{ProjectTitle}/
+# ├── project.json      ← SINGLE source of truth
+# ├── renders/          ← All stills
+# ├── video/            ← All video clips  
+# ├── audio/            ← Source + processed audio
+# ├── exports/          ← Final exports
+# └── llm/              ← ALL LLM logs (no separate director/)
 
 import re
 import time
@@ -25,11 +34,22 @@ def sanitize_filename(name: str, max_length: int = 100) -> str:
 
 class PathManager:
     """
-    Centralized path management that abstracts away storage locations.
-    All file operations should go through this service.
+    v1.8.5: Centralized path management with USER-CONTROLLED project locations.
     
-    Supports user-configurable workspace root with fallback to DATA folder
-    for backwards compatibility.
+    KEY CHANGES from v1.8.0:
+    - Projects live where USER chooses (not forced into /data/projects)
+    - Single project.json per project (no UUID duplicates)
+    - LLM logs consolidated (no separate director/ folder)
+    - workspace_root is for GLOBAL temp/cache only, not project storage
+    
+    Project structure:
+    {project_location}/{ProjectTitle}/
+    ├── project.json
+    ├── renders/
+    ├── video/
+    ├── audio/
+    ├── exports/
+    └── llm/
     """
     
     def __init__(self, workspace_root: Optional[Path] = None):
@@ -37,12 +57,12 @@ class PathManager:
         Initialize PathManager.
         
         Args:
-            workspace_root: User-configured root directory.
-                          Falls back to DATA if None (backwards compatibility).
+            workspace_root: Root for GLOBAL temp/cache/debug only.
+                          Projects use their own project_location.
         """
         self.workspace_root = workspace_root if workspace_root else DATA
         self._ensure_structure()
-        print(f"[INFO] PathManager initialized with workspace: {self.workspace_root}")
+        print(f"[INFO] PathManager v1.8.5 initialized. Global workspace: {self.workspace_root}")
     
     # ========= Directory Structure =========
     
@@ -81,10 +101,13 @@ class PathManager:
     
     def get_project_folder(self, state: Dict[str, Any]) -> Path:
         """
-        Get project root folder. Creates if doesn't exist.
+        v1.8.5: Get project root folder from project_location.
         
-        v1.8.0: Uses project_location from state if available,
-        otherwise falls back to workspace_root/projects/{ProjectTitle}_v{X.X.X}
+        NEW BEHAVIOR:
+        - project_location is REQUIRED for new projects
+        - project_location points DIRECTLY to the project folder
+        - NO version suffix in folder name (user controls naming)
+        - Fallback to legacy behavior only for old projects
         
         Args:
             state: Project state dictionary
@@ -94,26 +117,23 @@ class PathManager:
         """
         project = state.get("project", {})
         
-        # v1.8.0: Check if project has custom location
+        # v1.8.5: project_location IS the project folder (direct path)
         project_location = project.get("project_location")
         if project_location:
-            # Use custom location
-            project_path = Path(project_location)
-            title = project.get("title", "Untitled")
-            safe_title = sanitize_filename(title, 30)
-            
-            # Create project folder: {custom_location}/{ProjectTitle}
-            folder_path = project_path / safe_title
+            folder_path = Path(project_location)
             return self._ensure_dir(folder_path)
         
-        # Fallback: use workspace_root/projects (backwards compatible)
+        # LEGACY FALLBACK: Old projects without project_location
+        # This should only trigger for pre-1.8.5 projects
         title = project.get("title", "Untitled")
         created_version = project.get("created_version", VERSION)
+        pid = project.get("id", "unknown")
         
         safe_title = sanitize_filename(title, 30)
         folder_name = f"{safe_title}_v{created_version}"
         
         folder_path = self.projects_dir / folder_name
+        print(f"[WARN] Project {pid} has no project_location - using legacy path: {folder_path}")
         return self._ensure_dir(folder_path)
     
     def get_project_renders_dir(self, state: Dict[str, Any]) -> Path:
@@ -128,17 +148,25 @@ class PathManager:
         """Get video subdirectory for project."""
         return self._ensure_dir(self.get_project_folder(state) / "video")
     
+    def get_project_exports_dir(self, state: Dict[str, Any]) -> Path:
+        """v1.8.5: Get exports subdirectory for project (final renders)."""
+        return self._ensure_dir(self.get_project_folder(state) / "exports")
+    
     def get_project_temp_dir(self, state: Dict[str, Any]) -> Path:
         """Get temp subdirectory for project (auto-cleanup candidate)."""
         return self._ensure_dir(self.get_project_folder(state) / "temp")
     
     def get_project_llm_dir(self, state: Dict[str, Any]) -> Path:
-        """Get LLM responses subdirectory for project."""
+        """Get LLM responses subdirectory for project (includes director logs)."""
         return self._ensure_dir(self.get_project_folder(state) / "llm")
     
     def get_project_director_dir(self, state: Dict[str, Any]) -> Path:
-        """Get Director subdirectory for project."""
-        return self._ensure_dir(self.get_project_folder(state) / "director")
+        """
+        DEPRECATED v1.8.5: Director logs now go to llm/ folder.
+        This method returns llm/ for backwards compatibility.
+        """
+        # Redirect to llm folder - no more separate director folder
+        return self.get_project_llm_dir(state)
     
     # ========= URL Conversion =========
     
@@ -188,9 +216,18 @@ class PathManager:
             rel_path = url.replace("/files/", "", 1)
             return self.workspace_root / rel_path
         elif url.startswith("/renders/"):
-            # Legacy support
+            # Legacy support - /renders/filename.png maps to workspace_root/renders/filename.png
             rel_path = url.replace("/renders/", "", 1)
-            return self.workspace_root / rel_path
+            # First try as direct path (for /renders/projects/... format)
+            direct_path = self.workspace_root / rel_path
+            if direct_path.exists():
+                return direct_path
+            # Then try in renders subdir (for /renders/filename.png format)
+            renders_path = self.workspace_root / "renders" / rel_path
+            if renders_path.exists():
+                return renders_path
+            # Return direct path as default (will 404 if not found)
+            return direct_path
         elif url.startswith("http://") or url.startswith("https://"):
             # External URL - return as-is
             raise ValueError(f"Cannot convert external URL to filesystem path: {url}")

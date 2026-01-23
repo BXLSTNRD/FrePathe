@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 # ========= Version =========
-VERSION = "1.8.2"
+VERSION = "1.8.5"
 
 # ========= Threading Locks =========
 PROJECT_LOCKS: Dict[str, threading.Lock] = {}

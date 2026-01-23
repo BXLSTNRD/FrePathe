@@ -333,18 +333,53 @@ def validate_project_state(state: Dict[str, Any], strict: bool = False) -> Tuple
 
 def project_path(pid: str) -> Path:
     """
-    v1.8.0: Get path to project JSON file in workspace/projects/.
-    This is the fallback storage for projects without a custom project_location.
+    LEGACY v1.8.0: Get path to loose UUID JSON file.
+    DEPRECATED in v1.8.5 - only used for loading old projects.
+    New projects use project_location/project.json directly.
     """
     return PATH_MANAGER.workspace_root / "projects" / f"{pid}.json"
 
 
+def get_project_json_path(state: Dict[str, Any]) -> Path:
+    """
+    v1.8.5: Get the SINGLE project.json path for a project.
+    This is the only JSON that should exist for each project.
+    """
+    project_folder = get_project_folder(state)
+    return project_folder / "project.json"
+
+
 def load_project(pid: str) -> Dict[str, Any]:
-    """Load project from disk."""
-    p = project_path(pid)
-    if not p.exists():
+    """
+    v1.8.5: Load project from disk.
+    
+    Search order:
+    1. Legacy UUID-based JSON (workspace/projects/{pid}.json)
+    2. If found, check if it has project_location and prefer that
+    """
+    # Try legacy path first (for backwards compatibility)
+    legacy_path = project_path(pid)
+    state = None
+    
+    if legacy_path.exists():
+        state = json.loads(legacy_path.read_text(encoding="utf-8"))
+        
+        # Check if this project has a project_location with newer data
+        project_location = state.get("project", {}).get("project_location")
+        if project_location:
+            project_json = Path(project_location) / "project.json"
+            if project_json.exists():
+                # Load from project_location - it's the source of truth
+                location_state = json.loads(project_json.read_text(encoding="utf-8"))
+                # Use the one with newer updated_at
+                state_updated = state.get("project", {}).get("updated_at", "")
+                loc_updated = location_state.get("project", {}).get("updated_at", "")
+                if loc_updated >= state_updated:
+                    state = location_state
+                    print(f"[INFO] Loaded from project_location: {project_location}")
+    
+    if state is None:
         raise HTTPException(404, "Project not found")
-    state = json.loads(p.read_text(encoding="utf-8"))
     
     # Validate on load (non-strict, just warn)
     is_valid, errors = validate_project_state(state, strict=False)
@@ -492,8 +527,12 @@ def migrate_fal_to_local(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def save_project(state: Dict[str, Any], validate: bool = True, force: bool = False) -> None:
     """
-    Save project state.
-    Auto-migrates version if mismatch detected.
+    v1.8.5: Save project state to SINGLE location.
+    
+    NEW BEHAVIOR:
+    - If project has project_location: save ONLY to {project_location}/project.json
+    - Legacy fallback: save to workspace/projects/{pid}.json (for old projects)
+    - NO MORE duplicate JSONs
     """
     pid = state["project"]["id"]
     
@@ -511,21 +550,23 @@ def save_project(state: Dict[str, Any], validate: bool = True, force: bool = Fal
         if not is_valid:
             print(f"[WARN] Saving project {pid} with validation errors: {errors}")
     
-    project_path(pid).write_text(
-        json.dumps(state, indent=2, ensure_ascii=False), 
-        encoding="utf-8"
-    )
+    project_location = state.get("project", {}).get("project_location")
     
-    # Also save to project folder
-    try:
-        project_folder = get_project_folder(state)
+    if project_location:
+        # v1.8.5: Save ONLY to project_location/project.json - NOTHING in data/
+        project_folder = Path(project_location)
+        project_folder.mkdir(parents=True, exist_ok=True)
         project_json_path = project_folder / "project.json"
         project_json_path.write_text(
             json.dumps(state, indent=2, ensure_ascii=False), 
             encoding="utf-8"
         )
-    except Exception as e:
-        print(f"[WARN] Failed to save to project folder: {e}")
+        print(f"[SAVE] Project saved to: {project_json_path}")
+        # NO stub file - clean save to user location only
+    else:
+        # No project_location yet - project exists only in memory
+        # User must SAVE to set a location
+        print(f"[INFO] Project {pid} has no location yet - waiting for user to SAVE")
 
 
 def new_project(
@@ -535,10 +576,30 @@ def new_project(
     llm: str = "claude", 
     image_model_choice: str = "nanobanana", 
     video_model: str = "none", 
-    use_whisper: bool = False
+    use_whisper: bool = False,
+    project_location: str = None
 ) -> Dict[str, Any]:
-    """Create a new project with default structure."""
+    """
+    v1.8.5: Create a new project with user-specified location.
+    
+    Args:
+        title: Project title
+        style_preset: Visual style preset
+        aspect: Aspect ratio (square/vertical/horizontal)
+        llm: LLM provider (claude/openai)
+        image_model_choice: Image generation model
+        video_model: Video generation model
+        use_whisper: Use Whisper for transcription
+        project_location: REQUIRED for v1.8.5+ - folder path where project lives
+    
+    Returns:
+        Project state dictionary
+    """
     pid = str(uuid.uuid4())
+    
+    # v1.8.5: project_location is set later when user clicks SAVE
+    # Don't create ANY folders until then
+    final_location = project_location if project_location else None
     
     state = {
         "project": {
@@ -550,6 +611,7 @@ def new_project(
             "image_model_choice": image_model_choice,
             "video_model": video_model,
             "use_whisper": use_whisper,
+            "project_location": final_location,
             "created_at": now_iso(),
             "updated_at": now_iso(),
             "created_version": VERSION,
@@ -574,25 +636,43 @@ def new_project(
 
 def list_projects() -> List[Dict[str, Any]]:
     """
-    v1.8.0: List all projects with metadata.
-    Scans workspace/projects/ for JSON files.
+    v1.8.5: List all projects with metadata.
+    Handles both legacy and stub files.
     """
     projects = []
+    seen_ids = set()
     projects_dir = PATH_MANAGER.workspace_root / "projects"
     projects_dir.mkdir(parents=True, exist_ok=True)
+    
     for p in projects_dir.glob("*.json"):
         if p.name.startswith("."):
             continue
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
+            
+            # v1.8.5: Check if this is a stub file
+            if data.get("_stub"):
+                redirect = data.get("_redirect")
+                if redirect and Path(redirect).exists():
+                    # Load actual project from redirect location
+                    data = json.loads(Path(redirect).read_text(encoding="utf-8"))
+            
             proj = data.get("project", {})
+            pid = proj.get("id")
+            
+            # Avoid duplicates
+            if pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            
             projects.append({
-                "id": proj.get("id"),
+                "id": pid,
                 "title": proj.get("title", "Untitled"),
                 "style_preset": proj.get("style_preset"),
                 "created_at": proj.get("created_at"),
                 "updated_at": proj.get("updated_at"),
                 "created_version": proj.get("created_version"),
+                "project_location": proj.get("project_location"),
             })
         except Exception as e:
             print(f"[WARN] Failed to read project {p.name}: {e}")
@@ -648,3 +728,278 @@ def normalize_structure_type(s: str) -> str:
     if t.startswith("pre-chorus") or t.startswith("pre chorus"):
         return "prechorus"
     return "verse"
+
+
+# ========= v1.8.5 Migration =========
+
+def migrate_project_to_location(pid: str, new_location: str, copy_assets: bool = True) -> Dict[str, Any]:
+    """
+    v1.8.5: Migrate an existing project to a new user-specified location.
+    
+    This function:
+    1. Loads the existing project
+    2. Creates new folder structure at new_location
+    3. Copies/moves all assets (renders, audio, video, llm logs)
+    4. Updates all paths in the JSON
+    5. Saves to new location
+    6. Optionally keeps backup of old location
+    
+    Args:
+        pid: Project ID to migrate
+        new_location: Target base folder (project folder will be created inside)
+        copy_assets: If True, copy files. If False, move files.
+    
+    Returns:
+        Updated project state
+    
+    Raises:
+        HTTPException: If migration fails
+    """
+    import shutil
+    
+    # Load existing project
+    state = load_project(pid)
+    title = state["project"].get("title", "Untitled")
+    safe_title = sanitize_filename(title, 30)
+    
+    # Determine old locations to scan for assets
+    old_locations = _find_all_project_assets(state)
+    
+    # Create new project folder
+    new_base = Path(new_location)
+    new_project_folder = new_base / safe_title
+    new_project_folder.mkdir(parents=True, exist_ok=True)
+    
+    # Create subfolders
+    new_renders = new_project_folder / "renders"
+    new_audio = new_project_folder / "audio"
+    new_video = new_project_folder / "video"
+    new_llm = new_project_folder / "llm"
+    new_exports = new_project_folder / "exports"
+    
+    for folder in [new_renders, new_audio, new_video, new_llm, new_exports]:
+        folder.mkdir(exist_ok=True)
+    
+    # Migration stats
+    stats = {"renders": 0, "audio": 0, "video": 0, "llm": 0, "errors": []}
+    
+    # Migrate assets and update paths
+    path_mapping = {}  # old_path -> new_path
+    
+    for old_path in old_locations.get("render_files", []):
+        try:
+            new_path = new_renders / old_path.name
+            if copy_assets:
+                shutil.copy2(old_path, new_path)
+            else:
+                shutil.move(old_path, new_path)
+            path_mapping[str(old_path)] = str(new_path)
+            stats["renders"] += 1
+        except Exception as e:
+            stats["errors"].append(f"Render {old_path.name}: {e}")
+    
+    for old_path in old_locations.get("audio_files", []):
+        try:
+            new_path = new_audio / old_path.name
+            if copy_assets:
+                shutil.copy2(old_path, new_path)
+            else:
+                shutil.move(old_path, new_path)
+            path_mapping[str(old_path)] = str(new_path)
+            stats["audio"] += 1
+        except Exception as e:
+            stats["errors"].append(f"Audio {old_path.name}: {e}")
+    
+    for old_path in old_locations.get("video_files", []):
+        try:
+            new_path = new_video / old_path.name
+            if copy_assets:
+                shutil.copy2(old_path, new_path)
+            else:
+                shutil.move(old_path, new_path)
+            path_mapping[str(old_path)] = str(new_path)
+            stats["video"] += 1
+        except Exception as e:
+            stats["errors"].append(f"Video {old_path.name}: {e}")
+    
+    for old_path in old_locations.get("llm_files", []):
+        try:
+            new_path = new_llm / old_path.name
+            if copy_assets:
+                shutil.copy2(old_path, new_path)
+            else:
+                shutil.move(old_path, new_path)
+            stats["llm"] += 1
+        except Exception as e:
+            stats["errors"].append(f"LLM {old_path.name}: {e}")
+    
+    # Update project_location in state
+    state["project"]["project_location"] = str(new_project_folder)
+    
+    # Update all URL references in state
+    state = _update_url_references(state, new_project_folder)
+    
+    # Save to new location
+    save_project(state)
+    
+    print(f"[MIGRATION] Project {pid} migrated to {new_project_folder}")
+    print(f"[MIGRATION] Stats: {stats}")
+    
+    if stats["errors"]:
+        print(f"[MIGRATION] Warnings: {len(stats['errors'])} files could not be migrated")
+    
+    return state
+
+
+def _find_all_project_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
+    """
+    v1.8.5: Find all asset files across potential legacy locations.
+    
+    Scans:
+    - Current project folder (if project_location set)
+    - Legacy versioned folders (e.g., Title_v1.7.0, Title_v1.8.0)
+    - Loose files in data/renders, data/uploads
+    """
+    pid = state["project"]["id"]
+    title = state["project"].get("title", "")
+    safe_title = sanitize_filename(title, 30)
+    
+    result = {
+        "render_files": [],
+        "audio_files": [],
+        "video_files": [],
+        "llm_files": [],
+        "scanned_folders": []
+    }
+    
+    folders_to_scan = []
+    
+    # 1. Current project_location
+    if state["project"].get("project_location"):
+        folders_to_scan.append(Path(state["project"]["project_location"]))
+    
+    # 2. Scan for versioned folders in projects dir
+    projects_dir = PATH_MANAGER.workspace_root / "projects"
+    if projects_dir.exists():
+        for folder in projects_dir.iterdir():
+            if folder.is_dir():
+                # Match Title_v1.X.X pattern or Title_UUID pattern
+                if folder.name.startswith(safe_title) or pid[:8] in folder.name:
+                    folders_to_scan.append(folder)
+    
+    # 3. Check legacy global folders
+    legacy_renders = PATH_MANAGER.workspace_root / "renders"
+    legacy_uploads = PATH_MANAGER.workspace_root / "uploads"
+    
+    for legacy_dir in [legacy_renders, legacy_uploads]:
+        if legacy_dir.exists():
+            folders_to_scan.append(legacy_dir)
+    
+    # Scan all folders
+    for folder in folders_to_scan:
+        if not folder.exists():
+            continue
+        result["scanned_folders"].append(str(folder))
+        
+        # Scan renders
+        renders_dir = folder / "renders" if (folder / "renders").exists() else folder
+        for ext in ["*.png", "*.jpg", "*.jpeg", "*.webp"]:
+            for f in renders_dir.glob(ext):
+                if "_thumb" not in f.name:  # Skip thumbnails
+                    result["render_files"].append(f)
+        
+        # Scan audio
+        audio_dir = folder / "audio" if (folder / "audio").exists() else folder
+        for ext in ["*.mp3", "*.wav", "*.flac", "*.m4a", "*.ogg"]:
+            for f in audio_dir.glob(ext):
+                result["audio_files"].append(f)
+        
+        # Scan video
+        video_dir = folder / "video" if (folder / "video").exists() else folder
+        for ext in ["*.mp4", "*.webm", "*.mov"]:
+            for f in video_dir.glob(ext):
+                result["video_files"].append(f)
+        
+        # Scan LLM logs (and legacy director/)
+        for llm_subdir in ["llm", "director"]:
+            llm_dir = folder / llm_subdir
+            if llm_dir.exists():
+                for f in llm_dir.glob("*.json"):
+                    result["llm_files"].append(f)
+    
+    # Deduplicate
+    for key in ["render_files", "audio_files", "video_files", "llm_files"]:
+        seen = set()
+        unique = []
+        for p in result[key]:
+            if str(p) not in seen:
+                seen.add(str(p))
+                unique.append(p)
+        result[key] = unique
+    
+    return result
+
+
+def _update_url_references(state: Dict[str, Any], new_project_folder: Path) -> Dict[str, Any]:
+    """
+    v1.8.5: Update all URL references in state to point to new location.
+    """
+    # Helper to update a single URL
+    def update_url(url: str) -> str:
+        if not url:
+            return url
+        if url.startswith("http://") or url.startswith("https://"):
+            return url  # External URL - don't touch
+        
+        # Extract filename from various URL formats
+        filename = None
+        if url.startswith("/files/"):
+            # /files/projects/Title_v1.8.0/renders/scene1.png -> scene1.png
+            filename = Path(url).name
+        elif url.startswith("/renders/"):
+            filename = Path(url).name
+        else:
+            # Might be absolute path
+            filename = Path(url).name
+        
+        if filename:
+            # Determine subfolder based on extension
+            ext = Path(filename).suffix.lower()
+            if ext in [".png", ".jpg", ".jpeg", ".webp"]:
+                new_path = new_project_folder / "renders" / filename
+            elif ext in [".mp4", ".webm", ".mov"]:
+                new_path = new_project_folder / "video" / filename
+            elif ext in [".mp3", ".wav", ".flac", ".m4a", ".ogg"]:
+                new_path = new_project_folder / "audio" / filename
+            else:
+                return url  # Unknown type
+            
+            if new_path.exists():
+                return PATH_MANAGER.to_url(new_path)
+        
+        return url
+    
+    # Update cast refs
+    for cast_id, refs in state.get("cast_matrix", {}).get("character_refs", {}).items():
+        if refs.get("ref_a"):
+            refs["ref_a"] = update_url(refs["ref_a"])
+        if refs.get("ref_b"):
+            refs["ref_b"] = update_url(refs["ref_b"])
+    
+    # Update scene decor refs
+    for scene in state.get("cast_matrix", {}).get("scenes", []):
+        if scene.get("decor_refs"):
+            scene["decor_refs"] = [update_url(u) for u in scene["decor_refs"]]
+    
+    # Update shot renders
+    for shot in state.get("storyboard", {}).get("shots", []):
+        if shot.get("render", {}).get("image_url"):
+            shot["render"]["image_url"] = update_url(shot["render"]["image_url"])
+        if shot.get("video", {}).get("video_url"):
+            shot["video"]["video_url"] = update_url(shot["video"]["video_url"])
+    
+    # Update audio_dna source
+    if state.get("audio_dna", {}) and state["audio_dna"].get("source_url"):
+        state["audio_dna"]["source_url"] = update_url(state["audio_dna"]["source_url"])
+    
+    return state

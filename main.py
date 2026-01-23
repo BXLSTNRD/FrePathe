@@ -35,6 +35,7 @@ from services.project_service import (
     project_path, load_project, recover_orphaned_renders, save_project, new_project,
     list_projects, delete_project,
     normalize_structure_type,
+    migrate_project_to_location,  # v1.8.5: Project migration
 )
 from services.audio_service import (
     get_audio_duration_librosa, get_audio_duration_mutagen, get_audio_duration,
@@ -100,6 +101,10 @@ from services.ui_service import (
 # v1.6.9: STYLE_PRESETS, style_tokens, style_script_notes imported from services.styles
 
 # ========= App =========
+
+# v1.8.5: In-memory project states (for new projects before first SAVE)
+PROJECT_STATES: Dict[str, Dict[str, Any]] = {}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Fetch live pricing
@@ -108,6 +113,323 @@ async def lifespan(app: FastAPI):
     # Shutdown: cleanup if needed (currently none)
 
 app = FastAPI(lifespan=lifespan)
+
+
+def get_project(project_id: str) -> Dict[str, Any]:
+    """v1.8.5: Get project from memory or disk."""
+    if project_id in PROJECT_STATES:
+        return PROJECT_STATES[project_id]
+    state = load_project(project_id)  # Use load_project, not recursive call!
+    PROJECT_STATES[project_id] = state  # Cache in memory
+    return state
+
+
+def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
+    """
+    v1.8.5: LAZY MIGRATION - Find actual asset files in legacy locations.
+    
+    TWO-PHASE APPROACH:
+    1. Resolve URLs from state (renders, audio referenced in JSON)
+    2. SCAN legacy folders for ALL assets (including orphaned videos not in JSON)
+    
+    Returns dict with 'renders', 'audio', 'video', 'llm' lists of Path objects.
+    """
+    result = {"renders": [], "audio": [], "video": [], "llm": []}
+    
+    pid = state.get("project", {}).get("id", "")
+    title = state.get("project", {}).get("title", "")
+    safe_title = sanitize_filename(title, 30) if title else ""
+    
+    # Build list of legacy folders to scan
+    legacy_folders = []
+    
+    # 1. Current project_location (if set)
+    if state.get("project", {}).get("project_location"):
+        legacy_folders.append(Path(state["project"]["project_location"]))
+    
+    # 2. Scan for ALL matching folders in data/projects/
+    projects_dir = PATH_MANAGER.workspace_root / "projects"
+    if projects_dir.exists():
+        for folder in projects_dir.iterdir():
+            if folder.is_dir():
+                folder_lower = folder.name.lower().replace("_", " ").replace("-", " ")
+                title_lower = title.lower().replace("_", " ").replace("-", " ") if title else ""
+                safe_lower = safe_title.lower().replace("_", " ")
+                
+                # Match by title (various formats) or UUID
+                if (title_lower and title_lower[:15] in folder_lower) or \
+                   (safe_lower and safe_lower[:15] in folder_lower) or \
+                   (pid and pid[:8] in folder.name):
+                    if folder not in legacy_folders:
+                        legacy_folders.append(folder)
+    
+    print(f"[GATHER] Scanning {len(legacy_folders)} legacy folders for project '{title}'")
+    for f in legacy_folders:
+        print(f"[GATHER]   - {f.name}")
+    
+    def resolve_url_to_path(url: str) -> Optional[Path]:
+        """Convert URL or path reference to actual file Path."""
+        if not url:
+            return None
+        if url.startswith("http://") or url.startswith("https://"):
+            return None  # External URL - can't gather
+        
+        # Try /renders/projects/... format (common legacy format)
+        if url.startswith("/renders/"):
+            rel_path = url[9:]  # Remove "/renders/"
+            full_path = PATH_MANAGER.workspace_root / rel_path
+            if full_path.exists():
+                return full_path
+            # Also try just the filename in all legacy folders
+            filename = Path(url).name
+            for folder in legacy_folders:
+                for subdir in ["renders", "video", "audio", ""]:
+                    candidate = folder / subdir / filename if subdir else folder / filename
+                    if candidate.exists():
+                        return candidate
+        
+        # Try /files/... format
+        if url.startswith("/files/"):
+            rel_path = url[7:]  # Remove "/files/"
+            full_path = PATH_MANAGER.workspace_root / rel_path
+            if full_path.exists():
+                return full_path
+        
+        # Try as absolute path
+        if Path(url).is_absolute() and Path(url).exists():
+            return Path(url)
+        
+        return None
+    
+    # ========= ONLY gather assets that are ACTUALLY REFERENCED in state =========
+    # Gather renders from shots (by URL)
+    for shot in state.get("storyboard", {}).get("shots", []):
+        render_url = shot.get("render", {}).get("image_url")
+        if render_url:
+            path = resolve_url_to_path(render_url)
+            if path and path not in result["renders"]:
+                result["renders"].append(path)
+                # Also check for thumbnail
+                thumb = path.with_name(path.stem + "_thumb.webp")
+                if thumb.exists() and thumb not in result["renders"]:
+                    result["renders"].append(thumb)
+        
+        # Video (by URL) - check both correct location (render.video) and legacy (video)
+        video_url = shot.get("render", {}).get("video", {}).get("video_url")
+        if not video_url:
+            video_url = shot.get("video", {}).get("video_url")  # Legacy location
+        if video_url:
+            path = resolve_url_to_path(video_url)
+            if path and path not in result["video"]:
+                result["video"].append(path)
+    
+    # Gather cast refs (by URL)
+    for cast_id, refs in state.get("cast_matrix", {}).get("character_refs", {}).items():
+        for ref_key in ["ref_a", "ref_b"]:
+            ref_url = refs.get(ref_key)
+            if ref_url:
+                path = resolve_url_to_path(ref_url)
+                if path and path not in result["renders"]:
+                    result["renders"].append(path)
+    
+    # Gather scene decor refs and wardrobe refs (by URL)
+    for scene in state.get("cast_matrix", {}).get("scenes", []):
+        for decor_url in scene.get("decor_refs", []):
+            path = resolve_url_to_path(decor_url)
+            if path and path not in result["renders"]:
+                result["renders"].append(path)
+        
+        wardrobe_ref = scene.get("wardrobe_ref")
+        if wardrobe_ref:
+            path = resolve_url_to_path(wardrobe_ref)
+            if path and path not in result["renders"]:
+                result["renders"].append(path)
+    
+    # Gather audio (by URL)
+    audio_url = state.get("audio_dna", {}).get("source_url")
+    if audio_url:
+        path = resolve_url_to_path(audio_url)
+        if path and path not in result["audio"]:
+            result["audio"].append(path)
+    
+    # ========= Scan for orphaned audio (exists in folder but not in JSON) =========
+    if not result["audio"]:
+        print(f"[GATHER] No audio in JSON, scanning legacy folders for audio files...")
+        for folder in legacy_folders:
+            audio_dir = folder / "audio"
+            if audio_dir.exists() and audio_dir.is_dir():
+                for ext in ["*.mp3", "*.wav", "*.flac", "*.m4a", "*.ogg"]:
+                    for f in audio_dir.glob(ext):
+                        if f not in result["audio"]:
+                            result["audio"].append(f)
+                            print(f"[GATHER] Found orphaned audio: {f.name} in {folder.name}")
+        # Only keep the most recent one if multiple found (from highest version folder)
+        if len(result["audio"]) > 1:
+            # Sort by parent folder name (version) descending, take first
+            result["audio"].sort(key=lambda p: p.parent.parent.name, reverse=True)
+            kept = result["audio"][0]
+            result["audio"] = [kept]
+            print(f"[GATHER] Multiple audio files found, keeping: {kept.name}")
+    
+    # ========= ONLY for videos: scan for orphaned files (not in JSON but should be linked) =========
+    # Get shot IDs that DON'T have video_url set (check both locations)
+    shots_without_video = []
+    for shot in state.get("storyboard", {}).get("shots", []):
+        has_video = (shot.get("render", {}).get("video", {}).get("video_url") or 
+                     shot.get("video", {}).get("video_url"))
+        if not has_video:
+            shot_id = shot.get("shot_id", "")
+            if shot_id:
+                shots_without_video.append(shot_id)
+    
+    if shots_without_video:
+        print(f"[GATHER] Looking for orphaned videos for {len(shots_without_video)} shots without video_url")
+        for folder in legacy_folders:
+            video_dir = folder / "video"
+            if video_dir.exists() and video_dir.is_dir():
+                for ext in ["*.mp4", "*.webm", "*.mov"]:
+                    for f in video_dir.glob(ext):
+                        # Check if this video matches a shot without video
+                        import re
+                        name_lower = f.stem.lower()
+                        for shot_id in shots_without_video:
+                            shot_lower = shot_id.lower().replace("_", "")
+                            # Match patterns like video_seq_01_sh01 with seq_01_sh01
+                            if shot_lower.replace("_", "") in name_lower.replace("_", ""):
+                                if f not in result["video"]:
+                                    result["video"].append(f)
+                                    print(f"[GATHER] Found orphaned video: {f.name} for {shot_id}")
+                                break
+    
+    # ========= Gather LLM/Director logs from CURRENT project folder only =========
+    # (not from other style versions)
+    current_folder = None
+    if state.get("project", {}).get("project_location"):
+        current_folder = Path(state["project"]["project_location"])
+    else:
+        # Find the most recent matching folder (highest version)
+        for folder in sorted(legacy_folders, reverse=True):
+            if folder.exists():
+                current_folder = folder
+                break
+    
+    if current_folder:
+        for subdir_name in ["llm", "director"]:
+            subdir = current_folder / subdir_name
+            if subdir.exists() and subdir.is_dir():
+                for json_file in subdir.glob("*.json"):
+                    if json_file not in result["llm"]:
+                        result["llm"].append(json_file)
+    
+    print(f"[GATHER] Found {len(result['renders'])} renders, {len(result['audio'])} audio, {len(result['video'])} video, {len(result['llm'])} llm logs")
+    return result
+
+
+def _update_state_paths(state: Dict[str, Any], new_project_folder: Path, gathered_videos: List[Path] = None, gathered_audio: List[Path] = None) -> Dict[str, Any]:
+    """
+    v1.8.5: Update all URL references in state to point to new project folder.
+    Also links orphaned videos to shots and orphaned audio to audio_dna.
+    """
+    def make_new_url(filename: str, asset_type: str) -> str:
+        """Generate new /files/ URL for asset."""
+        subdir = {"render": "renders", "video": "video", "audio": "audio"}.get(asset_type, "renders")
+        new_path = new_project_folder / subdir / filename
+        return PATH_MANAGER.to_url(new_path)
+    
+    def update_url(url: str, asset_type: str = "render") -> str:
+        """Update a single URL to point to new location."""
+        if not url:
+            return url
+        if url.startswith("http://") or url.startswith("https://"):
+            return url  # Keep external URLs
+        
+        filename = Path(url).name
+        return make_new_url(filename, asset_type)
+    
+    # Build video lookup by shot identifier (for orphaned videos)
+    video_lookup = {}
+    if gathered_videos:
+        for vpath in gathered_videos:
+            # Extract shot ID from filename like "video_seq_01_sh01.mp4"
+            name = vpath.stem.lower()
+            # Try patterns: video_seq_XX_shYY, seq_XX_sh_YY, seqXX_shYY
+            import re
+            match = re.search(r'seq[_]?(\d+)[_]?sh[_]?(\d+)', name)
+            if match:
+                seq_num, shot_num = match.groups()
+                key = f"seq{seq_num.zfill(2)}_sh{shot_num.zfill(2)}"
+                video_lookup[key] = vpath
+    
+    # Update shot renders and videos
+    for shot in state.get("storyboard", {}).get("shots", []):
+        if shot.get("render", {}).get("image_url"):
+            shot["render"]["image_url"] = update_url(shot["render"]["image_url"], "render")
+        
+        # Video is stored at shot["render"]["video"]["video_url"] (frontend compatible)
+        # But old migrations may have put it at shot["video"]["video_url"]
+        # Check both locations and normalize to shot["render"]["video"]
+        existing_video_url = None
+        
+        # Check correct location first
+        if shot.get("render", {}).get("video", {}).get("video_url"):
+            existing_video_url = shot["render"]["video"]["video_url"]
+        # Check legacy location
+        elif shot.get("video", {}).get("video_url"):
+            existing_video_url = shot["video"]["video_url"]
+            # Clean up legacy location
+            del shot["video"]
+        
+        if existing_video_url:
+            # Update existing video URL
+            new_url = update_url(existing_video_url, "video")
+            if "render" not in shot:
+                shot["render"] = {}
+            shot["render"]["video"] = {"video_url": new_url}
+        else:
+            # Try to link orphaned video by shot ID
+            shot_id = shot.get("shot_id", "")
+            # shot_id format: "seq_01_sh01" or similar
+            import re
+            match = re.search(r'seq[_]?(\d+)[_]?sh[_]?(\d+)', shot_id.lower())
+            if match:
+                seq_num, shot_num = match.groups()
+                key = f"seq{seq_num.zfill(2)}_sh{shot_num.zfill(2)}"
+                if key in video_lookup:
+                    vpath = video_lookup[key]
+                    new_url = make_new_url(vpath.name, "video")
+                    if "render" not in shot:
+                        shot["render"] = {}
+                    shot["render"]["video"] = {"video_url": new_url}
+                    print(f"[MIGRATE] Linked orphaned video {vpath.name} to shot {shot_id}")
+    
+    # Update cast refs
+    for cast_id, refs in state.get("cast_matrix", {}).get("character_refs", {}).items():
+        if refs.get("ref_a"):
+            refs["ref_a"] = update_url(refs["ref_a"], "render")
+        if refs.get("ref_b"):
+            refs["ref_b"] = update_url(refs["ref_b"], "render")
+    
+    # Update scene refs
+    for scene in state.get("cast_matrix", {}).get("scenes", []):
+        if scene.get("decor_refs"):
+            scene["decor_refs"] = [update_url(u, "render") for u in scene["decor_refs"]]
+        if scene.get("wardrobe_ref"):
+            scene["wardrobe_ref"] = update_url(scene["wardrobe_ref"], "render")
+    
+    # Update audio - also link orphaned audio if source_url is empty
+    if state.get("audio_dna", {}).get("source_url"):
+        state["audio_dna"]["source_url"] = update_url(state["audio_dna"]["source_url"], "audio")
+    elif gathered_audio and len(gathered_audio) > 0:
+        # Link first orphaned audio file to audio_dna
+        audio_file = gathered_audio[0]
+        new_url = make_new_url(audio_file.name, "audio")
+        if "audio_dna" not in state:
+            state["audio_dna"] = {}
+        state["audio_dna"]["source_url"] = new_url
+        print(f"[MIGRATE] Linked orphaned audio {audio_file.name} to audio_dna.source_url")
+    
+    return state
+
 
 # v1.6.9: now_iso, require_key, fal_headers imported from services.config
 # v1.6.9: call_img2img_editor imported from services.render_service
@@ -208,22 +530,51 @@ def static_hanger():
 @app.get("/files/{filepath:path}")
 def serve_file(filepath: str):
     """
-    v1.8.0: Serve any file from workspace root.
-    Supports user-configurable workspace location.
+    v1.8.5: Serve files from workspace root OR project locations.
+    
+    Supports:
+    1. Files in workspace_root (data/)
+    2. Files in current project's project_location
+    3. Just filename - search in all known locations
     """
     from fastapi.responses import FileResponse
     from services.config import PATH_MANAGER
     
     try:
-        # Construct full path
-        full_path = PATH_MANAGER.workspace_root / filepath
+        full_path = None
         
-        # Security: prevent path traversal
-        full_path = full_path.resolve()
-        if not full_path.is_relative_to(PATH_MANAGER.workspace_root.resolve()):
-            raise HTTPException(403, "Access denied")
+        # 1. Try workspace_root first (direct path)
+        candidate = PATH_MANAGER.workspace_root / filepath
+        if candidate.exists():
+            full_path = candidate.resolve()
+            # Security check
+            if not full_path.is_relative_to(PATH_MANAGER.workspace_root.resolve()):
+                raise HTTPException(403, "Access denied")
         
-        if not full_path.exists():
+        # 1b. Try workspace_root/renders/ (legacy renders)
+        if not full_path:
+            candidate = PATH_MANAGER.workspace_root / "renders" / filepath
+            if candidate.exists():
+                full_path = candidate.resolve()
+        
+        # 2. If just a filename, search in loaded project locations
+        if not full_path and "/" not in filepath and "\\" not in filepath:
+            filename = filepath
+            # Search in all loaded project locations
+            for pid, state in PROJECT_STATES.items():
+                proj_loc = state.get("project", {}).get("project_location")
+                if proj_loc:
+                    proj_path = Path(proj_loc)
+                    # Check renders, video, audio subfolders
+                    for subdir in ["renders", "video", "audio", ""]:
+                        candidate = proj_path / subdir / filename if subdir else proj_path / filename
+                        if candidate.exists():
+                            full_path = candidate.resolve()
+                            break
+                    if full_path:
+                        break
+        
+        if not full_path or not full_path.exists():
             raise HTTPException(404, f"File not found: {filepath}")
         
         return FileResponse(
@@ -266,26 +617,45 @@ def index():
 # ========= API: Project =========
 @app.post("/api/project/create")
 def api_create_project(payload: Dict[str,Any]):
+    """
+    v1.8.5: Create new project with optional user-specified location.
+    
+    Payload:
+        - title: Project title
+        - style_preset: Visual style
+        - aspect: horizontal/vertical/square
+        - llm: claude/openai
+        - image_model: nanobanana/seedream45/flux2
+        - video_model: Video model or "none"
+        - use_whisper: Use Whisper for transcription
+        - project_location: (OPTIONAL) Base folder where project folder will be created
+    """
     state = new_project(
         payload.get("title","New Production"),
         payload.get("style_preset","Anamorphic Cinema"),
         payload.get("aspect","horizontal"),
         payload.get("llm","claude"),
         payload.get("image_model","nanobanana"),
-        payload.get("video_model","none"),  # v1.5.6
-        payload.get("use_whisper", False),  # v1.5.6
+        payload.get("video_model","none"),
+        payload.get("use_whisper", False),
+        payload.get("project_location"),
     )
-    save_project(state)
+    # v1.8.5: Store in memory until user SAVEs to a location
+    PROJECT_STATES[state["project"]["id"]] = state
+    # Don't call save_project yet - no location set
     return state
 
 @app.get("/api/project/{project_id}")
 def api_get_project(project_id: str):
-    return load_project(project_id)
+    # v1.8.5: Check in-memory first, then disk
+    if project_id in PROJECT_STATES:
+        return PROJECT_STATES[project_id]
+    return get_project(project_id)
 
 @app.get("/api/project/{project_id}/validate")
 def api_validate_project(project_id: str):
     """v1.12: Validate project state and return detailed errors."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     is_valid, errors = validate_project_state(state, strict=False)
     return {
         "project_id": project_id,
@@ -300,7 +670,7 @@ def api_validate_project(project_id: str):
 @app.patch("/api/project/{project_id}/settings")
 def api_update_project_settings(project_id: str, payload: Dict[str, Any]):
     """Update project settings like video_model, use_whisper, etc."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     allowed_fields = ["title", "style_preset", "aspect", "video_model", "use_whisper", "audio_locked"]
     updated = []
@@ -338,7 +708,11 @@ def api_get_costs():
 @app.get("/api/project/{project_id}/costs")
 def api_get_project_costs(project_id: str):
     """v1.4.9: Get project-specific cost tracking."""
-    state = load_project(project_id)
+    # v1.8.5: Check in-memory first
+    if project_id in PROJECT_STATES:
+        state = PROJECT_STATES[project_id]
+    else:
+        state = get_project(project_id)
     costs = state.get("costs", {"total": 0.0, "calls": []})
     return {
         "total": round(costs.get("total", 0.0), 4),
@@ -392,7 +766,7 @@ def api_test_openai():
 @app.post("/api/project/{project_id}/cast/lock")
 def api_lock_cast(project_id: str, payload: Dict[str,Any]):
     """v1.4: Lock or unlock cast matrix."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     locked = payload.get("locked", True)
     state["project"]["cast_locked"] = locked
     save_project(state)
@@ -401,7 +775,7 @@ def api_lock_cast(project_id: str, payload: Dict[str,Any]):
 @app.post("/api/project/{project_id}/location")
 def api_set_project_location(project_id: str, payload: Dict[str, Any]):
     """v1.8.0: Set custom project location (folder where JSON is saved)."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     location = payload.get("location")
     
     if not location:
@@ -418,11 +792,194 @@ def api_set_project_location(project_id: str, payload: Dict[str, Any]):
     print(f"[INFO] Project {project_id} location set to: {location}")
     return {"project_location": str(location_path)}
 
+
+@app.post("/api/project/{project_id}/migrate")
+def api_migrate_project(project_id: str, payload: Dict[str, Any]):
+    """
+    v1.8.5: Migrate project to new location with all assets.
+    
+    Payload:
+        - location: Target folder (project subfolder will be created)
+        - copy: If true, copy files. If false, move files. Default: true
+    """
+    location = payload.get("location")
+    copy_assets = payload.get("copy", True)
+    
+    if not location:
+        raise HTTPException(400, "Missing location parameter")
+    
+    location_path = Path(location)
+    if not location_path.exists() or not location_path.is_dir():
+        raise HTTPException(400, f"Invalid location: {location}")
+    
+    try:
+        state = migrate_project_to_location(project_id, location, copy_assets)
+        return {
+            "status": "ok",
+            "project_id": project_id,
+            "new_location": state["project"]["project_location"]
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Migration failed: {str(e)[:200]}")
+
+
+@app.post("/api/project/{project_id}/save-to-folder")
+def api_save_to_folder(project_id: str, payload: Dict[str, Any]):
+    """
+    v1.8.5: Open folder picker, create project folder, GATHER assets, save.
+    
+    LAZY MIGRATION FLOW:
+    1. Opens native folder picker dialog
+    2. User selects a location (e.g., Desktop)
+    3. Creates {location}/{ProjectTitle}/ folder automatically
+    4. GATHERS all referenced assets from legacy locations
+    5. Copies assets to new folder structure
+    6. Updates paths in project_state
+    7. Saves project.json
+    
+    This handles both NEW projects (no assets to gather) and 
+    OLD projects (assets scattered in data/)
+    """
+    import threading
+    import shutil
+    
+    # Get current project state from memory or try to load
+    global PROJECT_STATES
+    state = PROJECT_STATES.get(project_id)
+    if not state:
+        try:
+            state = get_project(project_id)
+        except:
+            raise HTTPException(404, "Project not found")
+    
+    title = state["project"].get("title", "Untitled")
+    safe_title = sanitize_filename(title, 30)
+    
+    result = {"path": None, "cancelled": False}
+    
+    def pick_folder():
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            folder = filedialog.askdirectory(
+                title=f"Select location to save '{title}'",
+            )
+            root.destroy()
+            result["path"] = folder if folder else None
+            if not folder:
+                result["cancelled"] = True
+        except Exception as e:
+            print(f"[WARN] Folder picker failed: {e}")
+            result["path"] = None
+    
+    # Run tkinter in thread
+    thread = threading.Thread(target=pick_folder)
+    thread.start()
+    thread.join(timeout=120)
+    
+    if result["cancelled"] or not result["path"]:
+        return {"cancelled": True, "project_location": None}
+    
+    # User selected a folder - create project subfolder and save
+    try:
+        base_path = Path(result["path"])
+        project_folder = base_path / safe_title
+        project_folder.mkdir(parents=True, exist_ok=True)
+        
+        # Create subfolders
+        renders_dir = project_folder / "renders"
+        audio_dir = project_folder / "audio"
+        video_dir = project_folder / "video"
+        llm_dir = project_folder / "llm"
+        exports_dir = project_folder / "exports"
+        
+        for d in [renders_dir, audio_dir, video_dir, llm_dir, exports_dir]:
+            d.mkdir(exist_ok=True)
+        
+        # ========= LAZY MIGRATION: Gather & Copy Assets =========
+        gathered = _gather_referenced_assets(state)
+        copy_stats = {"renders": 0, "audio": 0, "video": 0, "llm": 0, "errors": []}
+        path_updates = {}  # old_url -> new_url
+        
+        # Copy render files
+        for old_path in gathered.get("renders", []):
+            try:
+                new_path = renders_dir / old_path.name
+                if not new_path.exists():
+                    shutil.copy2(old_path, new_path)
+                    copy_stats["renders"] += 1
+                path_updates[str(old_path)] = str(new_path)
+            except Exception as e:
+                copy_stats["errors"].append(f"Render {old_path.name}: {e}")
+        
+        # Copy audio files
+        for old_path in gathered.get("audio", []):
+            try:
+                new_path = audio_dir / old_path.name
+                if not new_path.exists():
+                    shutil.copy2(old_path, new_path)
+                    copy_stats["audio"] += 1
+                path_updates[str(old_path)] = str(new_path)
+            except Exception as e:
+                copy_stats["errors"].append(f"Audio {old_path.name}: {e}")
+        
+        # Copy video files
+        for old_path in gathered.get("video", []):
+            try:
+                new_path = video_dir / old_path.name
+                if not new_path.exists():
+                    shutil.copy2(old_path, new_path)
+                    copy_stats["video"] += 1
+                path_updates[str(old_path)] = str(new_path)
+            except Exception as e:
+                copy_stats["errors"].append(f"Video {old_path.name}: {e}")
+        
+        # Copy LLM/Director logs (all go to llm/ folder now)
+        for old_path in gathered.get("llm", []):
+            try:
+                new_path = llm_dir / old_path.name
+                if not new_path.exists():
+                    shutil.copy2(old_path, new_path)
+                    copy_stats["llm"] += 1
+            except Exception as e:
+                copy_stats["errors"].append(f"LLM {old_path.name}: {e}")
+        
+        print(f"[SAVE] Gathered assets: {copy_stats['renders']} renders, {copy_stats['audio']} audio, {copy_stats['video']} video, {copy_stats['llm']} llm logs")
+        if copy_stats["errors"]:
+            print(f"[SAVE] Errors: {copy_stats['errors']}")
+        
+        # ========= Update paths in state (pass gathered videos AND audio for orphan linking) =========
+        state = _update_state_paths(state, project_folder, gathered.get("video", []), gathered.get("audio", []))
+        
+        # Set location and save
+        state["project"]["project_location"] = str(project_folder)
+        save_project(state)
+        
+        # Update in-memory state
+        PROJECT_STATES[project_id] = state
+        
+        return {
+            "cancelled": False,
+            "project_location": str(project_folder),
+            "migrated_assets": {
+                "renders": copy_stats["renders"],
+                "audio": copy_stats["audio"],
+                "video": copy_stats["video"],
+                "llm": copy_stats["llm"]
+            }
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Save failed: {str(e)[:200]}")
+
+
 # v1.5.3: Update project settings (render_models, etc.)
 @app.post("/api/project/{project_id}/settings")
 def api_update_settings(project_id: str, payload: Dict[str,Any]):
     """Update project settings like render_models."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     if "render_models" in payload:
         rm = payload["render_models"]
@@ -451,10 +1008,21 @@ def api_import_project(payload: Dict[str,Any]):
     # v1.6.5: Update version to current so saves aren't blocked
     payload["project"]["created_version"] = VERSION
 
-    save_project(payload, validate=False, force=True)
-    return {"imported": True, "project_id": payload["project"]["id"]}
+    # v1.8.5: Store in memory for file serving from project_location
+    project_id = payload["project"]["id"]
+    PROJECT_STATES[project_id] = payload
+    
+    # Only save if project has a location (migrated projects)
+    if payload.get("project", {}).get("project_location"):
+        save_project(payload, validate=False, force=True)
+    else:
+        print(f"[INFO] Project {project_id} has no location yet - waiting for user to SAVE")
+    
+    return {"imported": True, "project_id": project_id}
 
 # ========= API: Maintenance =========
+
+
 @app.post("/api/cleanup/temp")
 def api_cleanup_temp(max_age_hours: int = 24):
     """
@@ -476,7 +1044,7 @@ def api_workspace_info():
 
 @app.post("/api/project/{project_id}/llm")
 def api_set_llm(project_id: str, payload: Dict[str,Any]):
-    state = load_project(project_id)
+    state = get_project(project_id)
 
     llm = (payload.get("llm") or "").strip().lower()
     if llm not in ("claude", "openai"):
@@ -488,7 +1056,7 @@ def api_set_llm(project_id: str, payload: Dict[str,Any]):
 
 @app.post("/api/project/{project_id}/render_models")
 def api_set_render_models(project_id: str, payload: Dict[str,Any]):
-    state = load_project(project_id)
+    state = get_project(project_id)
     rm = state["project"].get("render_models") or {}
     if payload.get("img2img_editor"):
         rm["img2img_editor"] = str(payload["img2img_editor"])
@@ -499,7 +1067,7 @@ def api_set_render_models(project_id: str, payload: Dict[str,Any]):
 # ========= API: Audio =========
 @app.post("/api/project/{project_id}/audio")
 async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str = Form(DEFAULT_AUDIO_PROMPT)):
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     ext = ""
@@ -639,7 +1207,7 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
 @app.patch("/api/project/{project_id}/audio/bpm")
 def api_update_bpm(project_id: str, payload: Dict[str, Any]):
     """Manually update the BPM if auto-detection was wrong."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     new_bpm = payload.get("bpm")
     if not new_bpm or not isinstance(new_bpm, (int, float)) or new_bpm < 40 or new_bpm > 240:
@@ -672,7 +1240,7 @@ def api_update_bpm(project_id: str, payload: Dict[str, Any]):
 @app.patch("/api/project/{project_id}/audio/lyrics")
 def api_update_lyrics(project_id: str, payload: Dict[str, Any]):
     """Manually update lyrics when auto-transcription fails."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     new_lyrics = payload.get("lyrics", "").strip()
     if not new_lyrics:
@@ -700,7 +1268,7 @@ def api_update_lyrics(project_id: str, payload: Dict[str, Any]):
 # ========= API: Cast =========
 @app.post("/api/project/{project_id}/cast")
 async def api_cast(project_id: str, file: UploadFile = File(...), role: str = Form("lead"), name: str = Form("")):
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cast_id = f"{role}_{len(state['cast'])+1}"
@@ -746,7 +1314,7 @@ async def api_cast(project_id: str, file: UploadFile = File(...), role: str = Fo
 
 @app.post("/api/project/{project_id}/cast/{cast_id}/ref")
 async def api_cast_add_ref(project_id: str, cast_id: str, file: UploadFile = File(...)):
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cast = find_cast(state, cast_id)
@@ -772,7 +1340,7 @@ async def api_cast_add_ref(project_id: str, cast_id: str, file: UploadFile = Fil
 
 @app.post("/api/project/{project_id}/cast/{cast_id}/lora")
 def api_cast_set_lora(project_id: str, cast_id: str, payload: Dict[str,Any]):
-    state = load_project(project_id)
+    state = get_project(project_id)
     cast = find_cast(state, cast_id)
     if not cast: raise HTTPException(404, "Cast not found")
 
@@ -794,7 +1362,7 @@ def api_cast_set_lora(project_id: str, cast_id: str, payload: Dict[str,Any]):
 @app.patch("/api/project/{project_id}/cast/{cast_id}")
 def api_cast_update(project_id: str, cast_id: str, payload: Dict[str,Any]):
     """v1.4.3: Update cast member properties (name, role, impact, prompt_extra)."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     cast = find_cast(state, cast_id)
     if not cast: 
         raise HTTPException(404, "Cast not found")
@@ -815,7 +1383,7 @@ def api_cast_update(project_id: str, cast_id: str, payload: Dict[str,Any]):
 @app.post("/api/project/{project_id}/cast/{cast_id}/image")
 async def api_cast_update_image(project_id: str, cast_id: str, file: UploadFile = File(...)):
     """Update the main cast image for an existing cast member."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
     
     cast = find_cast(state, cast_id)
@@ -860,7 +1428,7 @@ async def api_cast_update_image(project_id: str, cast_id: str, file: UploadFile 
 @app.delete("/api/project/{project_id}/cast/{cast_id}")
 def api_cast_delete(project_id: str, cast_id: str):
     """Delete a cast member from the project."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     cast_list = state.get("cast", [])
     original_len = len(cast_list)
@@ -880,7 +1448,7 @@ def api_cast_delete(project_id: str, cast_id: str):
 @app.post("/api/project/{project_id}/cast/{cast_id}/canonical_refs")
 async def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
     """v1.8.3: Generate both ref_a and ref_b in parallel (2x speedup)."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     editor = locked_editor_key(state)
     require_key("FAL_KEY", FAL_KEY)
 
@@ -948,7 +1516,7 @@ async def api_cast_generate_canonical_refs(project_id: str, cast_id: str):
 
     # v1.6.5: Thread-safe save with lock
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {})[cast_id] = {"ref_a": ref_a, "ref_b": ref_b}
 
         # v1.8.3: NO style lock auto-set
@@ -985,7 +1553,7 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str, p
 
     payload = payload or {}
 
-    state = load_project(project_id)
+    state = get_project(project_id)
     editor = locked_editor_key(state)
     require_key("FAL_KEY", FAL_KEY)
 
@@ -1048,7 +1616,7 @@ def api_cast_rerender_single_ref(project_id: str, cast_id: str, ref_type: str, p
 
     # v1.6.5: Thread-safe save with lock
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         char_refs = fresh_state.setdefault("cast_matrix", {}).setdefault("character_refs", {}).setdefault(cast_id, {})
         char_refs[f"ref_{ref_type}"] = local_path
 
@@ -1070,7 +1638,7 @@ async def api_cast_upload_ref(project_id: str, cast_id: str, ref_type: str, file
     if ref_type not in ("a", "b"):
         raise HTTPException(400, "ref_type must be 'a' or 'b'")
     
-    state = load_project(project_id)
+    state = get_project(project_id)
     cast = next((c for c in state.get("cast", []) if c.get("cast_id") == cast_id), None)
     if not cast:
         raise HTTPException(404, "Cast member not found")
@@ -1102,7 +1670,7 @@ async def api_cast_upload_ref(project_id: str, cast_id: str, ref_type: str, file
 @app.post("/api/project/{project_id}/castmatrix/scenes/autogen")
 def api_castmatrix_autogen_scenes(project_id: str, payload: Dict[str,Any]):
     """v1.4: Generate scenes based on timeline sequences (not random!)"""
-    state = load_project(project_id)
+    state = get_project(project_id)
     llm = payload.get("llm","claude")
     
     # v1.4: Get sequences from timeline
@@ -1219,7 +1787,7 @@ def api_castmatrix_autogen_scenes(project_id: str, payload: Dict[str,Any]):
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/render")
 def api_castmatrix_render_scene(project_id: str, scene_id: str):
     """v1.4: Render scene plates (1 decor ref), save locally."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cm = state.get("cast_matrix") or {}
@@ -1289,7 +1857,7 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
 
     # v1.7.1: Thread-safe save with lock + persist costs to fresh_state
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
         fresh_scenes = fresh_cm.get("scenes") or []
         fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
@@ -1320,7 +1888,7 @@ def api_castmatrix_render_scene(project_id: str, scene_id: str):
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/decor_alt")
 def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict[str, Any] = None):
     """Generate an alt decor image for the scene."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cm = state.get("cast_matrix") or {}
@@ -1358,7 +1926,7 @@ def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict
 
     # v1.7.1: Thread-safe save with lock + persist costs
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
         fresh_scenes = fresh_cm.get("scenes") or []
         fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
@@ -1382,7 +1950,7 @@ def api_castmatrix_scene_decor_alt(project_id: str, scene_id: str, payload: Dict
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/edit_decor_alt")
 def api_castmatrix_edit_decor_alt(project_id: str, scene_id: str, payload: Dict[str, Any]):
     """Edit alt decor using img2img with current image + edit prompt."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cm = state.get("cast_matrix") or {}
@@ -1441,7 +2009,7 @@ def api_castmatrix_edit_decor_alt(project_id: str, scene_id: str, payload: Dict[
 
     # Thread-safe save with lock + persist costs
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
         fresh_scenes = fresh_cm.get("scenes") or []
         fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
@@ -1461,7 +2029,7 @@ def api_castmatrix_edit_decor_alt(project_id: str, scene_id: str, payload: Dict[
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/edit")
 def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,Any]):
     """Edit scene using img2img with current image + edit prompt."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cm = state.get("cast_matrix") or {}
@@ -1519,7 +2087,7 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
 
     # v1.7.1: Thread-safe save with lock + persist costs
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
         fresh_scenes = fresh_cm.get("scenes") or []
         fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
@@ -1540,7 +2108,7 @@ def api_castmatrix_edit_scene(project_id: str, scene_id: str, payload: Dict[str,
 @app.patch("/api/project/{project_id}/castmatrix/scene/{scene_id}/wardrobe")
 def api_castmatrix_update_wardrobe(project_id: str, scene_id: str, payload: Dict[str,Any]):
     """Update scene-specific wardrobe/costume description."""
-    state = load_project(project_id)
+    state = get_project(project_id)
 
     cm = state.get("cast_matrix") or {}
     scenes = cm.get("scenes") or []
@@ -1559,7 +2127,7 @@ def api_castmatrix_update_wardrobe(project_id: str, scene_id: str, payload: Dict
 @app.patch("/api/project/{project_id}/castmatrix/scene/{scene_id}/decor_lock")
 def api_castmatrix_scene_decor_lock(project_id: str, scene_id: str, payload: Dict[str,Any]):
     """Lock/unlock scene decor to prevent re-rendering."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     cm = state.get("cast_matrix") or {}
     scenes = cm.get("scenes") or []
@@ -1578,7 +2146,7 @@ def api_castmatrix_scene_decor_lock(project_id: str, scene_id: str, payload: Dic
 @app.patch("/api/project/{project_id}/castmatrix/scene/{scene_id}/wardrobe_lock")
 def api_castmatrix_scene_wardrobe_lock(project_id: str, scene_id: str, payload: Dict[str,Any]):
     """Lock/unlock scene wardrobe to prevent editing."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     cm = state.get("cast_matrix") or {}
     scenes = cm.get("scenes") or []
@@ -1598,7 +2166,7 @@ def api_castmatrix_scene_wardrobe_lock(project_id: str, scene_id: str, payload: 
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/wardrobe_ref")
 def api_castmatrix_scene_wardrobe_ref(project_id: str, scene_id: str):
     """Generate a wardrobe preview: lead cast ref_a composited with scene decor and wardrobe."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
     
     cm = state.get("cast_matrix") or {}
@@ -1619,7 +2187,7 @@ def api_castmatrix_scene_wardrobe_ref(project_id: str, scene_id: str):
     
     # v1.7.1: Thread-safe save with lock + persist costs
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_scene = next((s for s in fresh_state.get("cast_matrix", {}).get("scenes", []) if s.get("scene_id")==scene_id), None)
         if fresh_scene:
             fresh_scene["wardrobe_ref"] = local_path
@@ -1639,7 +2207,7 @@ def api_castmatrix_scene_wardrobe_ref(project_id: str, scene_id: str):
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/edit_wardrobe")
 def api_castmatrix_edit_wardrobe(project_id: str, scene_id: str, payload: Dict[str, Any]):
     """Edit wardrobe using img2img with current image + edit prompt."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cm = state.get("cast_matrix") or {}
@@ -1706,7 +2274,7 @@ def api_castmatrix_edit_wardrobe(project_id: str, scene_id: str, payload: Dict[s
 
     # Thread-safe save with lock + persist costs + update wardrobe text
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_cm = fresh_state.get("cast_matrix") or {}
         fresh_scenes = fresh_cm.get("scenes") or []
         fresh_scene = next((s for s in fresh_scenes if s.get("scene_id") == scene_id), None)
@@ -1726,7 +2294,7 @@ def api_castmatrix_edit_wardrobe(project_id: str, scene_id: str, payload: Dict[s
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/import")
 async def api_castmatrix_import_scene(project_id: str, scene_id: str, file: UploadFile = File(...)):
     """Import custom image for scene decor."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     cm = state.get("cast_matrix") or {}
     scenes = cm.get("scenes") or []
@@ -1754,7 +2322,7 @@ async def api_castmatrix_import_scene(project_id: str, scene_id: str, file: Uplo
 
 @app.post("/api/project/{project_id}/castmatrix/scene/{scene_id}/generate")
 def api_castmatrix_generate_scene(project_id: str, scene_id: str, payload: Dict[str,Any]):
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     cast_id = (payload.get("cast_id") or "").strip()
@@ -1809,7 +2377,7 @@ def api_castmatrix_generate_scene(project_id: str, scene_id: str, payload: Dict[
 # ========= API: Build sequences =========
 @app.post("/api/project/{project_id}/sequences/build")
 def api_build_sequences(project_id: str, payload: Dict[str,Any]):
-    state = load_project(project_id)
+    state = get_project(project_id)
     llm = payload.get("llm","claude")
 
     if not state.get("audio_dna"): raise HTTPException(400, "AudioDNA missing. Upload audio first.")
@@ -1951,7 +2519,7 @@ def api_build_sequences(project_id: str, payload: Dict[str,Any]):
 @app.post("/api/project/{project_id}/sequences/repair")
 def api_repair_sequences(project_id: str):
     """v1.5.2: Fix sequences that exceed audio duration without regenerating."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     meta = (state.get("audio_dna") or {}).get("meta") or {}
     actual_duration = float(meta.get("duration_sec") or 180.0)
@@ -2028,7 +2596,7 @@ def api_repair_sequences(project_id: str):
 # ========= API: Expand sequences to shots =========
 @app.post("/api/project/{project_id}/shots/expand_all")
 def api_expand_all(project_id: str):
-    state = load_project(project_id)
+    state = get_project(project_id)
     seqs = state.get("storyboard", {}).get("sequences", [])
     if not seqs: raise HTTPException(400, "No sequences. Build sequences first.")
 
@@ -2162,7 +2730,7 @@ def api_expand_all(project_id: str):
 # ========= API: Expand selected sequence to shots =========
 @app.post("/api/project/{project_id}/shots/expand_sequence")
 def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
-    state = load_project(project_id)
+    state = get_project(project_id)
     seq_id = (payload.get("sequence_id") or "").strip()
     if not seq_id:
         raise HTTPException(400, "Missing sequence_id")
@@ -2285,7 +2853,7 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
 # ========= API: Tighten timing =========
 @app.post("/api/project/{project_id}/shots/tighten")
 def api_tighten(project_id: str):
-    state = load_project(project_id)
+    state = get_project(project_id)
     shots = state.get("storyboard", {}).get("shots", [])
     if not shots: raise HTTPException(400, "No shots. Expand first.")
 
@@ -2316,7 +2884,7 @@ def api_prewarm_fal_cache(project_id: str):
     v1.8: Pre-upload all cast refs and scene decors to FAL.
     Call before bulk rendering to avoid per-shot upload delays.
     """
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
     
     uploads = prewarm_fal_upload_cache(state)
@@ -2335,7 +2903,7 @@ def api_prewarm_fal_cache(project_id: str):
 @app.post("/api/project/{project_id}/shot/{shot_id}/render")
 def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = None):
     """v1.4: Render shot using img2img with scene decor + cast reference images (both A and B), save locally."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
 
     # v1.8.2: Get optional MASTER prompt (appended in CAPS)
@@ -2542,7 +3110,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
 
     # v1.7.1: Thread-safe save - reload state, update shot, persist costs, save atomically
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_shots = fresh_state.get("storyboard", {}).get("shots", [])
         fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
         if fresh_shot:
@@ -2570,7 +3138,7 @@ def api_render_shot(project_id: str, shot_id: str, payload: Dict[str, Any] = Non
 @app.post("/api/project/{project_id}/shot/{shot_id}/edit")
 def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
     """Edit a rendered shot using img2img with custom prompt and extra cast references. Preserves version history."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     require_key("FAL_KEY", FAL_KEY)
     
     shots = state.get("storyboard", {}).get("shots", [])
@@ -2653,7 +3221,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
 
     # v1.8.1.3: Thread-safe save with version history
     with get_project_lock(project_id):
-        fresh_state = load_project(project_id)
+        fresh_state = get_project(project_id)
         fresh_shots = fresh_state.get("storyboard", {}).get("shots", [])
         fresh_shot = next((s for s in fresh_shots if s.get("shot_id") == shot_id), None)
         if fresh_shot:
@@ -2701,7 +3269,7 @@ def api_edit_shot(project_id: str, shot_id: str, payload: Dict[str, Any]):
 @app.patch("/api/project/{project_id}/shot/{shot_id}/select_version")
 def api_select_shot_version(project_id: str, shot_id: str, payload: Dict[str, Any]):
     """Select which version (original or edit) to use as active."""
-    state = load_project(project_id)
+    state = get_project(project_id)
     
     shots = state.get("storyboard", {}).get("shots", [])
     shot = next((s for s in shots if s.get("shot_id") == shot_id), None)
@@ -2765,7 +3333,7 @@ def api_export_video(project_id: str, payload: Dict[str, Any] = {}):
     if not shutil.which("ffmpeg"):
         raise HTTPException(500, "FFmpeg not found. Install FFmpeg and add to PATH.")
     
-    state = load_project(project_id)
+    state = get_project(project_id)
     shots = state.get("storyboard", {}).get("shots", [])
     sequences = state.get("storyboard", {}).get("sequences", [])
     
@@ -3010,7 +3578,7 @@ def api_generate_shot_video(project_id: str, payload: Dict[str, Any]):
     """
     lock = get_project_lock(project_id)
     with lock:
-        state = load_project(project_id)
+        state = get_project(project_id)
         
         shot_id = payload.get("shot_id")
         print(f"[API] Generate video for shot: {shot_id}")
@@ -3074,7 +3642,7 @@ async def api_generate_batch_videos(project_id: str, payload: Dict[str, Any]):
     """
     lock = get_project_lock(project_id)
     with lock:
-        state = load_project(project_id)
+        state = get_project(project_id)
         
         shot_ids = payload.get("shot_ids")
         video_model = payload.get("video_model")
@@ -3106,7 +3674,7 @@ def api_export_video_img2vid(project_id: str, payload: Dict[str, Any] = {}):
     """
     lock = get_project_lock(project_id)
     with lock:
-        state = load_project(project_id)
+        state = get_project(project_id)
         
         video_model = payload.get("video_model")
         fps = int(payload.get("fps", 30))

@@ -1,5 +1,89 @@
 # Changelog
 
+# Fré Pathé v1.8.5 - Project Storage Refactor "De Grote Opruiming" (2026-01-23)
+
+**Release Date:** January 23, 2026  
+**Agent:** GitHub Copilot Claude Opus 4.5  
+**Score:** 8/10 (Werkt, maar te veel debugging rondes nodig voor simpele path issues)
+
+## 🗂️ Project Storage Revolution
+
+**Problem:** "De Chaos" - project files verspreid over meerdere locaties:
+- 3 JSON files per project (UUID loose, versioned folder, director folder)
+- Renders in `data/renders/`, `data/projects/`, `data/uploads/`
+- Geen user control over waar projecten staan
+- Moeilijk te backuppen, organiseren, of verwijderen
+
+**Solution:** User bepaalt waar projecten staan. Eén folder, alles erin.
+
+### 🆕 New Project Flow
+1. User klikt NEW → project bestaat alleen in memory
+2. User werkt aan project (renders, etc. gaan naar temp)
+3. User klikt SAVE → native folder picker opent
+4. User kiest locatie → `{locatie}/{ProjectTitle}/` wordt aangemaakt
+5. Alle assets worden verzameld en gekopieerd
+6. `project.json` wordt opgeslagen - SINGLE source of truth
+
+### 📁 New Project Structure
+```
+{UserLocation}/{ProjectTitle}/
+├── project.json      ← SINGLE source of truth
+├── renders/          ← All stills + thumbnails
+├── video/            ← All video clips  
+├── audio/            ← Source + processed audio
+├── exports/          ← Final exports
+└── llm/              ← ALL LLM logs (director + llm combined)
+```
+
+### 🔄 Lazy Migration
+Opening old project + SAVE = automatic migration:
+- Scans all legacy locations for assets
+- Gathers renders, audio, video, LLM/Director logs
+- Orphaned videos (files without JSON reference) linked to shots by filename pattern
+- Orphaned audio (when source_url is null) scanned from legacy folders
+- Copies to new user-chosen location
+- Updates all path references in state
+- No bulk migration needed - migrate per project as you use them
+
+### 🐛 Bug Fixes (during development)
+1. **Video structure mismatch**: Frontend expected `shot.render.video.video_url` but migration put it in `shot.video.video_url`
+   - Fixed: Now correctly stores at `shot["render"]["video"]` for frontend compatibility
+   - Checks both locations for backward compatibility
+2. **Audio not gathered**: Audio files existed but `source_url` was null in JSON
+   - Fixed: Added orphaned audio scanning in legacy folders when `source_url` is empty
+   - Links first found audio file to `audio_dna.source_url`
+3. **`/files/` endpoint**: Couldn't find files in user-chosen locations
+   - Fixed: Now searches `PROJECT_STATES` for project_location
+4. **Legacy `/renders/` endpoint 404s**: Files in `data/renders/` weren't found
+   - Fixed: `serve_file()` now also checks `workspace_root/renders/` subdir for legacy renders
+
+**Files Changed:**
+- `services/path_service.py` - PathManager now respects `project_location`
+- `services/project_service.py` - `save_project()` saves ONLY to project_location, no stub files
+- `main.py`:
+  - `PROJECT_STATES` dict for in-memory new projects
+  - `get_project()` wrapper checks memory before disk
+  - `_gather_referenced_assets()` - finds all assets in legacy locations
+  - `_update_state_paths()` - updates URLs after migration
+  - `api_save_to_folder` - folder picker + lazy migration
+- `services/config.py` - VERSION → "1.8.5"
+
+**What NO LONGER goes to `data/`:**
+- ❌ No project.json files
+- ❌ No renders
+- ❌ No audio
+- ❌ No video
+- ❌ No LLM/Director logs
+
+**What still uses `data/` (and that's OK):**
+- ✅ `data/temp/` - Temporary files (auto-cleanup)
+- ✅ `data/debug/` - FAL/LLM debug logs (development only)
+- ✅ `data/cache/` - Caching
+
+**Post-migration:** User can safely delete `data/projects/` folder.
+
+---
+
 # Fré Pathé v1.8.4.2 - Img2Vid Duration Sync Fix (2026-01-20)
 
 **Release Date:** January 20, 2026  

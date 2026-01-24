@@ -1,6 +1,6 @@
 """
 Fré Pathé v1.7 - Audio Service
-Handles audio DNA extraction, duration, BPM, Whisper transcription, and beat grid.
+Handles audio DNA extraction, duration, BPM, lyrics transcription integration, and beat grid.
 """
 import requests
 from pathlib import Path
@@ -8,7 +8,6 @@ from typing import Any, Dict, List, Optional
 
 from .config import (
     FAL_AUDIO,
-    FAL_WHISPER,
     fal_headers,
     track_cost
 )
@@ -291,8 +290,7 @@ async def analyze_audio(
     audio_url: str,
     prompt: str,
     state: Dict[str, Any],
-    use_whisper: bool = False
-) -> Dict[str, Any]:
+    ) -> Dict[str, Any]:
     """
     Analyze audio file using FAL audio-understanding and optionally Whisper.
     Returns normalized audio DNA with beat grid.
@@ -307,37 +305,7 @@ async def analyze_audio(
         print(f"[INFO] Local BPM detection (librosa): {local_bpm}")
     else:
         print(f"[WARN] Local BPM detection failed, will use FAL")
-    
-    # Optionally use Whisper for better transcription
-    whisper_transcript = None
-    if use_whisper:
-        print(f"[INFO] Using Whisper for enhanced transcription...")
-        try:
-            whisper_r = requests.post(
-                FAL_WHISPER,
-                headers=fal_headers(),
-                json={
-                    "audio_url": audio_url,
-                    "task": "transcribe",
-                    "language": "en",
-                    "chunk_level": "segment",
-                    "version": "3"
-                },
-                timeout=300
-            )
-            
-            if whisper_r.status_code < 300:
-                whisper_data = whisper_r.json()
-                whisper_transcript = whisper_data.get("text", "")
-                # Track Whisper cost
-                duration_for_cost = local_duration or 180
-                track_cost("fal-ai/whisper", int(duration_for_cost), state=state)
-                print(f"[INFO] Whisper transcription complete: {len(whisper_transcript)} chars")
-            else:
-                print(f"[WARN] Whisper failed: {whisper_r.status_code}")
-        except Exception as e:
-            print(f"[WARN] Whisper error: {e}")
-    
+
     # Call FAL audio-understanding
     r = requests.post(
         FAL_AUDIO,
@@ -356,37 +324,7 @@ async def analyze_audio(
     
     raw = r.json()
     audio_dna = normalize_audio_understanding(raw)
-    
-    # Enhance lyrics with Whisper transcript if available
-    if whisper_transcript:
-        audio_dna["whisper_transcript"] = whisper_transcript
-        existing_lyrics = audio_dna.get("lyrics", [])
-        if not existing_lyrics or len(existing_lyrics) < 3:
-            lines = [l.strip() for l in whisper_transcript.split("\n") if l.strip()]
-            if not lines:
-                lines = [s.strip() + "." for s in whisper_transcript.split(".") if s.strip()]
-            audio_dna["lyrics"] = [{"text": l} for l in lines[:50]]
-            audio_dna["lyrics_source"] = "whisper"
-        else:
-            audio_dna["lyrics_source"] = "audio-understanding"
-    
-    # Use local duration (librosa) if available
-    if local_duration:
-        if not audio_dna.get("meta"):
-            audio_dna["meta"] = {}
-        audio_dna["meta"]["duration_sec"] = local_duration
-        audio_dna["meta"]["duration_source"] = "librosa"
-    
-    # Use librosa BPM if available (much more accurate than FAL)
-    if local_bpm:
-        if not audio_dna.get("meta"):
-            audio_dna["meta"] = {}
-        fal_bpm = audio_dna["meta"].get("bpm", 120)
-        audio_dna["meta"]["bpm"] = local_bpm
-        audio_dna["meta"]["bpm_source"] = "librosa"
-        audio_dna["meta"]["bpm_fal"] = fal_bpm
-        print(f"[INFO] Using librosa BPM {local_bpm} (FAL detected: {fal_bpm})")
-    
+
     # Calculate beat grid for shot timing sync
     duration = audio_dna.get("meta", {}).get("duration_sec", 0)
     bpm = audio_dna.get("meta", {}).get("bpm", 120)
@@ -397,9 +335,7 @@ async def analyze_audio(
     return {
         "audio_dna": audio_dna,
         "local_duration": local_duration,
-        "used_whisper": use_whisper,
-        "whisper_transcript": whisper_transcript,
-    }
+            }
 
 
 def update_bpm(state: Dict[str, Any], new_bpm: int) -> Dict[str, Any]:

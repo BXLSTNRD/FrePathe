@@ -304,15 +304,16 @@ async function updateCostCounter() {
 async function ensureProject() {
   if (pid()) return pid();
   setStatus("Creating project…", null);
-  // v1.6.5: Include use_whisper from checkbox when creating project
-  const useWhisperEl = document.getElementById("useWhisper");
+  // v1.6.5: Include audio_expert from checkbox when creating project
+  // v1.8.6: Audio Expert selects OpenAI lyric model
+  const audioExpertEl = document.getElementById("audioExpert");
   const data = {
     title: document.getElementById("title").value || "New Production",
     style_preset: document.getElementById("style").value,
     aspect: document.getElementById("aspect").value,
     llm: document.getElementById("llm").value,
     image_model: document.getElementById("imageModel").value,
-    use_whisper: useWhisperEl?.checked || false
+    audio_expert: (audioExpertEl?.value === "on") || false
   };
   const result = await apiCall("/api/project/create", {
     method: "POST",
@@ -469,7 +470,7 @@ function loadProjectFromFile() {
       document.getElementById("aspect").value = state.project.aspect || "horizontal";
       document.getElementById("llm").value = state.project.llm || "claude";
       
-      // v1.5.6: Load video model and whisper settings
+      // v1.8.6: Load video model and audio expert setting
       const videoModelEl = document.getElementById("videoModel");
       if (videoModelEl && state.project.video_model) {
         videoModelEl.value = state.project.video_model;
@@ -493,8 +494,9 @@ function loadProjectFromFile() {
         });
         videoModelEl.dataset.listenerAdded = "true";
       }
-      const useWhisperEl = document.getElementById("useWhisper");
-      if (useWhisperEl) useWhisperEl.value = (state.project.use_whisper || false) ? "on" : "off";
+  // v1.8.6: Audio Expert selects OpenAI lyric model
+  const audioExpertEl = document.getElementById("audioExpert");
+      if (audioExpertEl) audioExpertEl.value = (state.project.audio_expert || false) ? "on" : "off";
       
       // Load image model
       const imageModelEl = document.getElementById("imageModel");
@@ -3613,12 +3615,7 @@ function syncProjectSettings(state) {
     videoModelDropdown.value = project.video_model || "none";
   }
   
-  // v1.5.6: Whisper checkbox
-  const whisperCheckbox = document.getElementById("useWhisper");
-  if (whisperCheckbox) {
-    whisperCheckbox.checked = project.use_whisper || false;
   }
-}
 
 // v1.5.3: Update image model when dropdown changes
 async function updateImageModel(value) {
@@ -3665,25 +3662,19 @@ async function updateImageModel(value) {
   }
 }
 
-// v1.5.6: Update Whisper setting
-async function updateWhisperSetting(enabled) {
-  if (!pid()) return;
-  
+// v1.8.6: Update Audio Expert setting (controls OpenAI lyric model)
+async function updateAudioExpertSetting(enabled) {
   try {
-    await apiCall(`/api/project/${pid()}/settings`, {
+    const res = await fetch(`/api/project/${PROJECT_ID}/settings`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ use_whisper: enabled })
+      body: JSON.stringify({ audio_expert: enabled })
     });
-    
-    // Update local state
-    if (PROJECT_STATE?.project) {
-      PROJECT_STATE.project.use_whisper = enabled;
-    }
-    
-    setStatus(enabled ? "Whisper enabled" : "Whisper disabled", 100);
+    if (!res.ok) throw new Error(await res.text());
+    PROJECT_STATE.project.audio_expert = enabled;
+    setStatus(enabled ? "Lyrics Expert enabled" : "Lyrics Expert disabled", 100);
   } catch (e) {
-    console.error("Failed to update Whisper setting:", e);
+    console.error("Failed to update Audio Expert setting:", e);
   }
 }
 
@@ -4386,7 +4377,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         parseAudioDNA(PROJECT_STATE.audio_dna);
         updateAudioButtons();
       }
-      // syncProjectSettings already called in refreshFromServer, includes use_whisper
+      // syncProjectSettings already called in refreshFromServer, includes audio_expert
       
       // Initialize Shot2Video stats
       updateAnimationStats();
@@ -4396,7 +4387,4 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 });
-
-
-
 

@@ -1,4 +1,4 @@
-import os, json, time, uuid, asyncio, threading
+import os, json, time, uuid, asyncio, threading, math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 from contextlib import asynccontextmanager
@@ -15,7 +15,7 @@ from services.config import (
     PROJECT_LOCKS, PROJECT_LOCKS_LOCK, get_project_lock,
     BASE, DATA, PATH_MANAGER,
     FAL_KEY, OPENAI_KEY, CLAUDE_KEY,
-    FAL_AUDIO, FAL_WHISPER,
+    FAL_AUDIO,
     FAL_NANOBANANA, FAL_NANOBANANA_EDIT,
     FAL_SEEDREAM45, FAL_SEEDREAM45_EDIT,
     FAL_FLUX2, FAL_FLUX2_EDIT,
@@ -93,7 +93,7 @@ from services.ui_service import (
 # Audio: build_beat_grid, snap_to_grid, get_audio_duration, get_audio_bpm_librosa
 #   from services.audio_service
 # Storyboard: target_sequences_and_shots from services.storyboard_service
-# Config: FAL_KEY, OPENAI_KEY, CLAUDE_KEY, FAL_AUDIO, FAL_WHISPER, FAL_* endpoints,
+# Config: FAL_KEY, OPENAI_KEY, CLAUDE_KEY, FAL_AUDIO, FAL_* endpoints,
 #   clamp, require_key, fal_headers, now_iso, log_llm_call, track_cost from services.config
 # v1.7.0: UI helpers imported from services.ui_service (DEFAULT_AUDIO_PROMPT, build_index_html, etc.)
 
@@ -652,7 +652,6 @@ def api_create_project(payload: Dict[str,Any]):
         - llm: claude/openai
         - image_model: nanobanana/seedream45/flux2
         - video_model: Video model or "none"
-        - use_whisper: Use Whisper for transcription
         - project_location: (OPTIONAL) Base folder where project folder will be created
     """
     state = new_project(
@@ -662,7 +661,6 @@ def api_create_project(payload: Dict[str,Any]):
         payload.get("llm","claude"),
         payload.get("image_model","nanobanana"),
         payload.get("video_model","none"),
-        payload.get("use_whisper", False),
         payload.get("project_location"),
     )
     # v1.8.5: Store in memory until user SAVEs to a location
@@ -694,10 +692,10 @@ def api_validate_project(project_id: str):
 # v1.5.6: Update project settings
 @app.patch("/api/project/{project_id}/settings")
 def api_update_project_settings(project_id: str, payload: Dict[str, Any]):
-    """Update project settings like video_model, use_whisper, etc."""
+    """Update project settings like video_model, use_, etc."""
     state = get_project(project_id)
     
-    allowed_fields = ["title", "style_preset", "aspect", "video_model", "use_whisper", "audio_locked"]
+    allowed_fields = ["title", "style_preset", "aspect", "video_model", "audio_locked"]
     updated = []
     
     for field in allowed_fields:
@@ -1105,6 +1103,39 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
     tmp_path = audio_dir / f"{original_name}{ext}"
     tmp_path.write_bytes(await file.read())
 
+    # ---- OpenAI upload size guard (OpenAI STT hard limit ~25MB) ----
+    def _ensure_openai_uploadable(_p: Path) -> Path:
+        max_bytes = 25 * 1024 * 1024  # 25MB hard cap (safety: we stay under)
+        safety_margin = 512 * 1024
+        limit = max_bytes - safety_margin
+        try:
+            size = _p.stat().st_size
+        except Exception:
+            return _p
+        if size <= limit:
+            return _p
+        import shutil as _shutil, subprocess as _subprocess
+        if _shutil.which("ffmpeg") is None:
+            raise HTTPException(status_code=500, detail=f"OpenAI STT requires upload <=25MB but file is {size} bytes and ffmpeg is not available to transcode.")
+        out_mp3 = _p.with_suffix(".openai.mp3")
+        # Try a couple of bitrates until we're safely under the limit
+        for br in ("128k", "96k", "64k"):
+            cmd = ["ffmpeg", "-y", "-i", str(_p), "-ac", "1", "-ar", "16000", "-b:a", br, str(out_mp3)]
+            proc = _subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                continue
+            try:
+                if out_mp3.stat().st_size <= limit:
+                    print(f"[INFO] Transcoded audio for OpenAI STT: {out_mp3.name} ({out_mp3.stat().st_size} bytes, bitrate={br})")
+                    return out_mp3
+            except Exception:
+                pass
+        # If we still exceed the limit, give a clear error.
+        raise HTTPException(status_code=413, detail=f"Audio file too large for OpenAI STT even after transcoding. Original={size} bytes, transcoded={out_mp3.stat().st_size if out_mp3.exists() else 'n/a'} bytes.")
+
+    openai_audio_path = _ensure_openai_uploadable(tmp_path)
+
+
     # v1.4: Get accurate duration using librosa/mutagen BEFORE fal.ai call
     local_duration = get_audio_duration(str(tmp_path))
     print(f"[INFO] Local audio duration: {local_duration}s")
@@ -1116,44 +1147,15 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
     else:
         print(f"[WARN] Local BPM detection failed, will use FAL")
 
+    fal_upload_path = tmp_path
+    if openai_audio_path != tmp_path:
+        fal_upload_path = openai_audio_path
+        print(f"[INFO] Using transcoded audio for FAL AU upload: {fal_upload_path.name}")
+
     try:
-        audio_url = fal_client.upload_file(str(tmp_path))
+        audio_url = fal_client.upload_file(str(fal_upload_path))
     except Exception as e:
         return JSONResponse({"error":"fal upload_file failed","detail":str(e)}, status_code=502)
-
-    # v1.5.6: Optionally use Whisper for better transcription
-    use_whisper = state.get("project", {}).get("use_whisper", False)
-    whisper_transcript = None
-    
-    if use_whisper:
-        print(f"[INFO] Using Whisper for enhanced transcription...")
-        try:
-            whisper_payload = {
-                "audio_url": audio_url,
-                "task": "transcribe",
-                "language": "en",  # Auto-detect if empty
-                "chunk_level": "segment",
-                "version": "3"
-            }
-            try:
-                whisper_r = requests.post(FAL_WHISPER, headers=fal_headers(), json=whisper_payload, timeout=300)
-            except requests.exceptions.RequestException as e:
-                print(f"[WARN] Whisper network error: {type(e).__name__}: {e}")
-                raise
-            
-            if whisper_r.status_code < 300:
-                whisper_data = whisper_r.json()
-                whisper_transcript = whisper_data.get("text", "")
-                # Log Whisper call
-                save_fal_debug("whisper", FAL_WHISPER, whisper_payload, whisper_data, project_id)
-                # Track Whisper cost
-                duration_for_cost = local_duration or 180
-                track_cost("fal-ai/whisper", int(duration_for_cost), state=state)
-                print(f"[INFO] Whisper transcription complete: {len(whisper_transcript)} chars")
-            else:
-                print(f"[WARN] Whisper failed: {whisper_r.status_code}")
-        except Exception as e:
-            print(f"[WARN] Whisper error: {e}")
 
     audio_payload = {"audio_url":audio_url, "prompt":prompt}
     try:
@@ -1175,23 +1177,76 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
     # Log audio understanding call
     save_fal_debug("audio_understanding", FAL_AUDIO, audio_payload, raw, project_id)
     audio_dna = normalize_audio_understanding(raw)
-    
-    # v1.5.6: Enhance lyrics with Whisper transcript if available
-    if whisper_transcript:
-        # Replace or supplement lyrics with Whisper transcript
-        audio_dna["whisper_transcript"] = whisper_transcript
-        # If existing lyrics are empty or minimal, use Whisper
-        existing_lyrics = audio_dna.get("lyrics", [])
-        if not existing_lyrics or len(existing_lyrics) < 3:
-            # Split transcript into lines for lyrics
-            lines = [l.strip() for l in whisper_transcript.split("\n") if l.strip()]
-            if not lines:
-                lines = [s.strip() + "." for s in whisper_transcript.split(".") if s.strip()]
-            audio_dna["lyrics"] = [{"text": l} for l in lines[:50]]  # Cap at 50 lines
-            audio_dna["lyrics_source"] = "whisper"
-        else:
-            audio_dna["lyrics_source"] = "audio-understanding"
-    
+
+    # ===== Lyrics: OpenAI Speech-to-Text (2-pass: transcript + timestamps) =====
+    # Pass 1 (quality text): gpt-4o-mini-transcribe by default, gpt-4o-transcribe in Audio Expert mode
+    # Pass 2 (timestamps): whisper-1 verbose_json segments
+    require_key("OPENAI_KEY", OPENAI_KEY)
+    stt_text_model = "gpt-4o-transcribe" if state.get("project", {}).get("audio_expert") else "gpt-4o-mini-transcribe"
+    stt_ts_model = "whisper-1"
+
+    # Cost units for OpenAI STT are tracked in minutes (rounded up)
+    duration_for_stt = local_duration or (audio_dna.get("duration_sec") or 180)
+    stt_minutes = max(1, int(math.ceil(float(duration_for_stt) / 60.0)))
+
+    try:
+        # ---- Pass 1: full transcript (no timestamps supported on 4o-transcribe models) ----
+        with open(openai_audio_path, "rb") as _f:
+            _headers = {"Authorization": f"Bearer {OPENAI_KEY}"}
+            _data = {
+                "model": stt_text_model,
+                "response_format": "json",
+                "language": "en",
+                "prompt": "This is sung song lyrics. Transcribe ALL words, including repeated choruses. Do not omit lines.",
+            }
+            _files = {"file": _f}
+            _stt1 = requests.post("https://api.openai.com/v1/audio/transcriptions", headers=_headers, data=_data, files=_files, timeout=300)
+
+        if _stt1.status_code >= 300:
+            raise Exception(f"OpenAI STT (pass1) failed: {_stt1.status_code} - {_stt1.text[:200]}")
+        _stt1_json = _stt1.json() if _stt1.headers.get("content-type","").startswith("application/json") else {"text": _stt1.text}
+        _full_text = (_stt1_json.get("text") or "").strip()
+        audio_dna["lyrics_full_text"] = _full_text
+        audio_dna["lyrics_full_text_source"] = stt_text_model
+        track_cost(stt_text_model, stt_minutes, state=state, note="lyrics_full_text")
+
+        # ---- Pass 2: timestamps via whisper-1 verbose_json segments ----
+        with open(openai_audio_path, "rb") as _f:
+            _headers = {"Authorization": f"Bearer {OPENAI_KEY}"}
+            _data = {
+                "model": stt_ts_model,
+                "response_format": "verbose_json",
+                "language": "en",
+                "prompt": "This is sung song lyrics. Transcribe ALL words, including repeated choruses. Do not omit lines.",
+                "timestamp_granularities[]": ["segment"],
+            }
+            _files = {"file": _f}
+            _stt2 = requests.post("https://api.openai.com/v1/audio/transcriptions", headers=_headers, data=_data, files=_files, timeout=300)
+
+        if _stt2.status_code >= 300:
+            raise Exception(f"OpenAI STT (pass2) failed: {_stt2.status_code} - {_stt2.text[:200]}")
+        _stt2_json = _stt2.json()
+        _segments = _stt2_json.get("segments") or []
+        audio_dna["lyrics"] = [
+            {"start": safe_float(s.get("start"), None), "end": safe_float(s.get("end"), None), "text": (s.get("text") or "").strip()}
+            for s in _segments
+            if (s.get("text") or "").strip()
+        ]
+        audio_dna["lyrics_source"] = stt_ts_model
+        audio_dna["openai_stt"] = {
+            "pass1_model": stt_text_model,
+            "pass2_model": stt_ts_model,
+            "pass1_has_text": bool(_full_text),
+            "pass2_segments": len(audio_dna["lyrics"]),
+        }
+        track_cost(stt_ts_model, stt_minutes, state=state, note="lyrics_timestamps")
+    except Exception as e:
+        print(f"[WARN] OpenAI STT error: {e}")
+        # Keep whatever lyrics FAL provided
+        audio_dna.setdefault("lyrics", [])
+        audio_dna["lyrics_source"] = "openai_failed_fallback_fal"
+
+
     # v1.4: Use local duration (librosa) if available, otherwise fal.ai duration
     if local_duration:
         if not audio_dna.get("meta"):
@@ -1226,7 +1281,7 @@ async def api_audio(project_id: str, file: UploadFile = File(...), prompt: str =
     state["audio_dna"] = audio_dna
     state["audio_file_path"] = str(tmp_path)  # v1.4: Store local path
     save_project(state)
-    return {"audio_url": audio_url, "audio_dna": audio_dna, "local_duration": local_duration, "used_whisper": use_whisper}
+    return {"audio_url": audio_url, "audio_dna": audio_dna, "local_duration": local_duration}
 
 # v1.5.8: Update BPM manually
 @app.patch("/api/project/{project_id}/audio/bpm")

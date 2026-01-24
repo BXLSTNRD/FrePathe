@@ -576,7 +576,6 @@ def new_project(
     llm: str = "claude", 
     image_model_choice: str = "nanobanana", 
     video_model: str = "none", 
-    use_whisper: bool = False,
     project_location: str = None
 ) -> Dict[str, Any]:
     """
@@ -589,8 +588,7 @@ def new_project(
         llm: LLM provider (claude/openai)
         image_model_choice: Image generation model
         video_model: Video generation model
-        use_whisper: Use Whisper for transcription
-        project_location: REQUIRED for v1.8.5+ - folder path where project lives
+            project_location: REQUIRED for v1.8.5+ - folder path where project lives
     
     Returns:
         Project state dictionary
@@ -610,9 +608,9 @@ def new_project(
             "llm": (llm or "claude"),
             "image_model_choice": image_model_choice,
             "video_model": video_model,
-            "use_whisper": use_whisper,
             "project_location": final_location,
             "created_at": now_iso(),
+            "audio_expert": False,
             "updated_at": now_iso(),
             "created_version": VERSION,
             "render_models": locked_render_models(image_model_choice),

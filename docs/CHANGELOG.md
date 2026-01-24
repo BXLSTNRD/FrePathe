@@ -1,5 +1,38 @@
 # Changelog
 
+# Fré Pathé v1.8.6 - OpenAI STT Dual-Pass + Upload Hardening (2026-01-23)
+
+**Release Date:** 2026-01-23  
+**Focus:** Betrouwbare lyrics (full text + timestamps) zonder Fal Whisper, plus fix voor OpenAI 25MB limiet.
+
+## 🎙️ Lyrics: OpenAI 2-pass (mini + whisper-1)
+- Pass 1: `gpt-4o-mini-transcribe` (standaard) of `gpt-4o-transcribe` wanneer **Lyrics Expert (OpenAI)** aan staat.
+- Pass 2: `whisper-1` met `verbose_json` + segment timestamps voor timing.
+- Resultaat:
+  - `lyrics_full_text` = beste volledige tekst (pass 1)
+  - `lyrics` = segmenten met timestamps (pass 2)
+
+## 📦 Upload limiet: automatische transcode (geen chunking)
+- OpenAI STT faalde op WAV net boven de max payload (413).
+- Oplossing: als upload te groot is wordt audio automatisch getranscode naar mono 16kHz MP3 (bitrate fallback 128k→96k→64k) en die versie wordt gebruikt voor OpenAI STT.
+
+## 🎚️ Fal AU: dezelfde MP3 wanneer getranscode
+- Wanneer er een MP3 gemaakt wordt voor OpenAI, wordt **diezelfde MP3** ook naar Fal `audio-understanding` gestuurd (1 upload, geen split calls).
+- Hierdoor kun je testen of WAV-encoding/mix invloed had op Fal AU.
+
+## 🧹 Whisper (Fal) volledig verwijderd uit UI/flow
+- Geen `fal-ai/whisper` meer.
+- “Audio Expert” toggle hernoemd naar **Lyrics Expert (OpenAI)** en stuurt enkel OpenAI modelkeuze aan.
+
+## 💸 Costmeter prijzen (OpenAI STT)
+- Correcte per-minute pricing toegevoegd voor:
+  - `gpt-4o-mini-transcribe`
+  - `gpt-4o-transcribe`
+  - `whisper-1`
+
+---
+
+
 # Fré Pathé v1.8.5 - Project Storage Refactor "De Grote Opruiming" (2026-01-23)
 
 **Release Date:** January 23, 2026  

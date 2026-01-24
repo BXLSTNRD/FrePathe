@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 # ========= Version =========
-VERSION = "1.8.5"
+VERSION = "1.8.6"
 
 # ========= Threading Locks =========
 PROJECT_LOCKS: Dict[str, threading.Lock] = {}
@@ -79,7 +79,6 @@ CLAUDE_KEY = os.environ.get("CLAUDE_KEY", "").strip()
 # ========= FAL Endpoints =========
 FAL_BASE = "https://fal.run"
 FAL_AUDIO = f"{FAL_BASE}/fal-ai/audio-understanding"
-FAL_WHISPER = f"{FAL_BASE}/fal-ai/whisper"
 FAL_FLUX2_T2I = f"{FAL_BASE}/fal-ai/flux-2"
 FAL_SEEDREAM45_T2I = f"{FAL_BASE}/fal-ai/bytedance/seedream/v4.5/text-to-image"
 FAL_NANOBANANA_PRO_T2I = f"{FAL_BASE}/fal-ai/nano-banana-pro"
@@ -100,8 +99,8 @@ API_COSTS = {
     # Audio (FAL pricing Jan 2026)
     # audio-understanding: $0.01 per 5-second unit
     "fal-ai/audio-understanding": 0.01,
-    # whisper: $0.0013 per compute second (roughly = audio duration)
-    "fal-ai/whisper": 0.0013,
+    # : $0.0013 per compute second (roughly = audio duration)
+    "fal-ai/": 0.0013,
     # Text-to-Image
     "fal-ai/nano-banana-pro": 0.15,
     "fal-ai/flux/dev": 0.025,
@@ -134,6 +133,11 @@ API_COSTS = {
     "claude-3-5-sonnet-20241022": 0.015,
     "claude-3-haiku-20240307": 0.002,
     "gpt-4o-mini": 0.001,
+
+    # OpenAI Speech-to-Text (pricing per minute; see OpenAI pricing docs)
+    "gpt-4o-mini-transcribe": 0.003,
+    "gpt-4o-transcribe": 0.006,
+    "whisper-1": 0.006,
     # Default
     "default": 0.05,
 }

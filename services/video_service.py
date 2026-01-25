@@ -557,6 +557,30 @@ def get_video_model_info(model_key: str) -> Dict[str, Any]:
     return VIDEO_MODELS.get(model_key, VIDEO_MODELS[DEFAULT_VIDEO_MODEL])
 
 
+def get_video_model_duration_guidance(state: Dict[str, Any]) -> tuple:
+    """
+    v1.8.8: Get duration constraints and LLM guidance string for the selected video model.
+    
+    Returns:
+        (min_dur, max_dur, guidance_string)
+    """
+    video_model_key = state.get("project", {}).get("video_model", "none")
+    video_model_info = VIDEO_MODELS.get(video_model_key) if video_model_key != "none" else None
+    
+    if video_model_info:
+        min_dur, max_dur = video_model_info.get("duration_range", (2, 5))
+        model_name = video_model_info.get("name", video_model_key)
+        if min_dur == max_dur:
+            guidance = f"EXACTLY {min_dur} seconds (video model {model_name} has fixed duration)"
+        else:
+            guidance = f"{min_dur}-{max_dur} seconds (video model {model_name} requirements)"
+    else:
+        min_dur, max_dur = 2, 5
+        guidance = "2-5 seconds"
+    
+    return min_dur, max_dur, guidance
+
+
 def list_video_models() -> List[Dict[str, Any]]:
     """List all available video models with metadata."""
     return [

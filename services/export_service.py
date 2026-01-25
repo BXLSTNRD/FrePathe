@@ -458,27 +458,48 @@ def export_video_with_img2vid(
         print(f"[IMG2VID] Concatenating {len(video_clips)} clips (total {total_duration:.1f}s)...")
         update_export_status(project_id, "processing", total_shots, total_shots, f"Concatenating {len(video_clips)} video clips...")
         
-        # Speed-adjust clips to match storyboard duration for audio sync
+        # v1.8.7: Trim/speed-adjust clips to match storyboard duration for audio sync
+        # TRIM-FIRST: If model outputs 5s but target is 3.2s, TRIM don't speed up (preserves natural motion)
+        # SPEED-UP: Only if trim failed or actual < target (rare)
         adjusted_clips = []
         for i, clip in enumerate(video_clips):
             video_data = clip["shot"].get("render", {}).get("video", {})
-            actual_dur = video_data.get("duration", 0)
-            target_dur = video_data.get("target_duration") or clip["duration"]
+            actual_dur = float(video_data.get("duration", 0) or 0)
+            target_dur = float(video_data.get("target_duration") or clip["duration"] or 0)
             
-            # Speed adjust if durations don't match (tolerance 0.1s)
-            if actual_dur > 0 and abs(actual_dur - target_dur) > 0.1:
+            # Adjust if durations don't match (tolerance 0.1s)
+            if actual_dur > 0 and target_dur > 0 and abs(actual_dur - target_dur) > 0.1:
+                
+                # CASE A: Model output LONGER than target -> TRIM (no speed change, natural motion)
+                if actual_dur > target_dur:
+                    trimmed_path = temp_dir / f"trimmed_{i:03d}.mp4"
+                    trim_cmd = [
+                        "ffmpeg", "-y",
+                        "-i", str(clip["path"]),
+                        "-t", f"{target_dur:.3f}",
+                        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                        "-an",  # No audio in individual clips
+                        str(trimmed_path)
+                    ]
+                    result = subprocess.run(trim_cmd, capture_output=True)
+                    if result.returncode == 0:
+                        print(f"[IMG2VID] {clip['shot'].get('shot_id')} trimmed: {actual_dur:.1f}s → {target_dur:.1f}s")
+                        adjusted_clips.append(trimmed_path)
+                        continue
+                    else:
+                        print(f"[WARN] Trim failed for {clip['shot'].get('shot_id')}, falling back to speed adjust")
+                
+                # CASE B: Model output SHORTER than target OR trim failed -> speed adjust
                 speed_factor = actual_dur / target_dur  # >1 = speedup, <1 = slowdown
                 adjusted_path = temp_dir / f"adjusted_{i:03d}.mp4"
                 
-                # Use setpts for video speed, atempo for audio (if present)
-                # setpts=PTS/speed makes video faster when speed>1
+                # Use setpts for video speed
                 speed_cmd = [
                     "ffmpeg", "-y",
                     "-i", str(clip["path"]),
                     "-filter:v", f"setpts=PTS/{speed_factor}",
-                    "-filter:a", f"atempo={speed_factor}" if speed_factor <= 2.0 else f"atempo=2.0,atempo={speed_factor/2.0}",
                     "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac",
+                    "-an",  # No audio in individual clips
                     str(adjusted_path)
                 ]
                 result = subprocess.run(speed_cmd, capture_output=True)

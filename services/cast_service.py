@@ -1,11 +1,123 @@
 """
-Fré Pathé v1.7 - Cast Service
+Fré Pathé v1.8.8 - Cast Service
 Handles cast member CRUD, character refs, and wardrobe generation.
 """
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .config import clamp
+
+
+# ========= Cast Impact/Usage =========
+
+def get_cast_usage_string(role: str, impact: float, is_primary_lead: bool = False) -> str:
+    """
+    v1.8.9: Convert role + impact to LLM usage instruction.
+    Role CONSTRAINS maximum presence, impact fine-tunes within that.
+    
+    - LEAD: can be HIGH (70%+) or MEDIUM (40-69%)
+    - SUPPORTING: can be MEDIUM (40%+) or LOW (<40%)
+    - EXTRA: always LOW regardless of impact slider
+    """
+    role_lower = role.lower()
+    
+    if role_lower == "extra":
+        # Extras are ALWAYS low presence - but impact slider scales within that
+        if impact >= 0.5:
+            return f"LOW PRESENCE ({int(impact*100)}%) - background/functional role, 5-6 shots, must have PURPOSE (bartender, taxi driver, etc.)"
+        else:
+            return f"MINIMAL PRESENCE ({int(impact*100)}%) - background only, 1-2 shots MAX, must have PURPOSE"
+    
+    elif role_lower == "supporting":
+        # Supporting can be medium or low, never high
+        if impact >= 0.5:
+            return f"MEDIUM PRESENCE ({int(impact*100)}%) - appears in ~half the shots, interacts with lead"
+        else:
+            return f"LOW PRESENCE ({int(impact*100)}%) - occasional appearances, supports the narrative"
+    
+    else:  # lead
+        if is_primary_lead:
+            return f"PRIMARY PROTAGONIST ({int(impact*100)}%) - THE main character, appears in 80%+ of shots"
+        elif impact >= 0.7:
+            return f"CO-LEAD ({int(impact*100)}%) - major character, appears in most shots (60%+)"
+        else:
+            return f"SECONDARY LEAD ({int(impact*100)}%) - important but not primary focus"
+
+
+def get_cast_usage_string_sequences(role: str, impact: float, is_primary_lead: bool = False) -> str:
+    """
+    v1.8.9: Usage string for sequence building. Same logic as shots but sequence-appropriate wording.
+    """
+    role_lower = role.lower()
+    
+    if role_lower == "extra":
+        if impact >= 0.5:
+            return f"BACKGROUND ({int(impact*100)}%) - appears in 2-3 sequences, functional role with PURPOSE"
+        else:
+            return f"MINIMAL ({int(impact*100)}%) - appears in 1 sequence only, must have narrative PURPOSE"
+    
+    elif role_lower == "supporting":
+        if impact >= 0.5:
+            return f"RECURRING ({int(impact*100)}%) - appears in ~half the sequences, supports lead"
+        else:
+            return f"OCCASIONAL ({int(impact*100)}%) - few key appearances, supports narrative"
+    
+    else:  # lead
+        if is_primary_lead:
+            return f"PROTAGONIST ({int(impact*100)}%) - THE main character, story follows them"
+        elif impact >= 0.7:
+            return f"CO-PROTAGONIST ({int(impact*100)}%) - major character arc, most sequences"
+        else:
+            return f"SECONDARY LEAD ({int(impact*100)}%) - important but not the primary focus"
+
+
+def build_sorted_cast_info(state: Dict[str, Any], for_sequences: bool = False) -> List[Dict[str, Any]]:
+    """
+    v1.8.9: Build cast info list sorted by role hierarchy and impact.
+    Centralizes the cast sorting + info building logic.
+    Identifies PRIMARY LEAD (first lead with highest impact) for protagonist clarity.
+    
+    Args:
+        state: Project state
+        for_sequences: If True, use sequence-appropriate usage strings
+    
+    Returns:
+        List of cast info dicts ready for LLM payload
+    """
+    role_priority = {"lead": 0, "supporting": 1, "extra": 2}
+    cast_sorted = sorted(
+        state.get("cast", []),
+        key=lambda c: (role_priority.get(c.get("role", "extra").lower(), 2), -c.get("impact", 0.5))
+    )
+    
+    # Find the primary lead (first lead = highest impact lead after sorting)
+    primary_lead_id = None
+    for c in cast_sorted:
+        if c.get("role", "").lower() == "lead":
+            primary_lead_id = c["cast_id"]
+            break  # First lead in sorted list is primary
+    
+    cast_info = []
+    for c in cast_sorted:
+        role = c.get("role", "extra")
+        impact = c.get("impact", 0.1 if role == "extra" else (0.5 if role == "supporting" else 0.7))
+        is_primary = (c["cast_id"] == primary_lead_id)
+        
+        if for_sequences:
+            usage = get_cast_usage_string_sequences(role, impact, is_primary)
+        else:
+            usage = get_cast_usage_string(role, impact, is_primary)
+        
+        cast_info.append({
+            "cast_id": c["cast_id"],
+            "name": c.get("name", ""),
+            "role": role.upper() if not for_sequences else role,
+            "impact": f"{int(impact*100)}%",
+            "wardrobe": c.get("prompt_extra", ""),
+            "usage": usage,
+        })
+    
+    return cast_info
 
 
 # ========= Cast Lookup =========

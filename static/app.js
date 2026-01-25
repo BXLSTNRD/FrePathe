@@ -2760,6 +2760,13 @@ async function renderShot(shotId) {
   try {
     ACTIVE_RENDERS++;
     showStopButton();  // v1.6.5: Show stop button for any render
+    
+    // v1.8.9: Clear old cached URL for this shot before re-rendering
+    const shot = PROJECT_STATE?.storyboard?.shots?.find(s => s.shot_id === shotId);
+    if (shot?.image_url) {
+      IMAGE_CACHE.delete(shot.image_url);
+      IMAGE_CACHE.delete(getThumbnailUrl(shot.image_url));
+    }
 
     setStatus(`Rendering ${shotId}…`, null, "storyboardStatus");
 
@@ -3519,6 +3526,9 @@ async function refreshFromServer() {
   try {
     // v1.5.8: Clear pending refs tracking on refresh
     PENDING_CAST_REFS.clear();
+    
+    // v1.8.9: Clear image cache so re-rendered shots show updated images
+    IMAGE_CACHE.clear();
     
     // v1.4.9.1: Save pending cast input values before refresh
     const pendingCastEdits = {};

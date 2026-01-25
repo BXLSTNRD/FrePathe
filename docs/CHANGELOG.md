@@ -1,5 +1,75 @@
 # Changelog
 
+# Fré Pathé v1.8.7 - Storyboard Bug Fixes + Wardrobe Discovery (2026-01-24/25)
+
+**Release Date:** 2026-01-25  
+**Agent:** GitHub Copilot Claude Opus 4.5  
+**Score:** 12/10 (User's words: "dubbel en dik verdient")
+
+## 🐛 Storyboard System Fixes (7 bugs from storyboardbug.md)
+
+### 1. Beat Grid Snapping
+- `snap_to_grid()` now actually used in shot generation
+- Shots align to audio beats for professional timing
+
+### 2. Cast Hierarchy & PRIMARY LEAD
+- `build_sorted_cast_info()` in cast_service.py
+- Sorts: Protagonist → Lead → Supporting → Extra
+- PRIMARY LEAD explicitly marked for LLM attention
+- Impact slider now works: role constrains max, impact fine-tunes
+
+### 3. Wardrobe/Decor_Alt Generation (QUOTA SYSTEM)
+- **Problem:** LLM returned 100% empty strings for wardrobe/decor_alt
+- **Solution:** Minimum quotas enforced:
+  - `decor_alt`: min 1 scene or 20%
+  - `wardrobe`: min 1 scene or 25%
+- Schema hint changed from "Leave empty if not needed" to "REQUIRED for some scenes per quota"
+- "If you provide ZERO, your response is INVALID"
+
+### 4. Video Model Duration Guidance
+- `get_video_model_duration_guidance()` in video_service.py
+- Returns (min, max, guidance_string) per model
+- LLM knows actual model capabilities
+
+### 5. Total Duration Validation
+- Auto-scales shots to match track duration
+- Console shows: `[WARN] differs by X.Xs` → `[INFO] Auto-scaled`
+
+### 6. Thumbnail Refresh Bug
+- **Problem:** `IMAGE_CACHE` never cleared → stale thumbnails
+- **Solution:** `IMAGE_CACHE.clear()` in `refreshFromServer()`
+- Per-shot cache delete before re-render
+
+## 🏗️ Service Architecture Refactor
+
+Moved functions from main.py to proper services:
+- `cast_service.py`: `build_sorted_cast_info()`, `get_cast_usage_string()`
+- `video_service.py`: `get_video_model_duration_guidance()`
+
+## 📋 Wardrobe 2.0 Roadmap (Documented)
+
+Discovered 5 critical wardrobe hiaten through hilarious visual examples:
+
+| # | Problem | Example |
+|---|---------|---------|
+| 1 | Gender unknown | Dokteur in pink renaissance dress 👗 |
+| 2 | Wardrobe scene-wide | Everyone becomes bompa in tweed 👴👴👴👴 |
+| 3 | ref_a + wardrobe_ref | 4 identical clones at café |
+| 4 | Extra function → no outfit | "Waiter" in casual t-shirt |
+| 5 | No base outfit fallback | Styled scene 1, casual scene 2-10 |
+
+**Planned features:**
+- Gender-aware wardrobe generation
+- Per-cast wardrobe (not scene-wide)
+- Wardrobe ref REPLACES ref_a (no clones)
+- Auto-wardrobe for functional roles
+- "Set as Default Outfit" button
+- "Outfit Inspiration" button (complementary styles)
+
+See: `docs/ROADMAP-WARDROBE-2.0.md`
+
+---
+
 # Fré Pathé v1.8.6 - OpenAI STT Dual-Pass + Upload Hardening (2026-01-23)
 
 **Release Date:** 2026-01-23  

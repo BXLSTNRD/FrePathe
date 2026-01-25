@@ -77,9 +77,14 @@ def call_claude_json(
     system: str, 
     user: str, 
     model: str = "claude-sonnet-4-5-20250929", 
-    max_tokens: int = 5000
+    max_tokens: int = 5000,
+    temperature: float = 0.7
 ) -> Dict[str, Any]:
-    """Call Claude API and return parsed JSON response."""
+    """Call Claude API and return parsed JSON response.
+    
+    Args:
+        temperature: 0.7 default. Use 0.85-0.95 for regeneration variety.
+    """
     require_key("CLAUDE_KEY", CLAUDE_KEY)
     url = "https://api.anthropic.com/v1/messages"
     headers = {
@@ -90,7 +95,7 @@ def call_claude_json(
     payload = {
         "model": model,
         "max_tokens": int(max_tokens),
-        "temperature": 0.7,
+        "temperature": temperature,
         "system": system,
         "messages": [{"role": "user", "content": user}],
     }
@@ -143,11 +148,15 @@ def call_llm_json(
     user: str, 
     preferred: str = "claude", 
     max_tokens: int = 5000, 
-    state: Dict = None
+    state: Dict = None,
+    temperature: float = 0.7
 ) -> Dict[str, Any]:
     """
     v1.8.4: Call LLM respecting user's preferred provider.
     Falls back to alternate if primary fails. Tracks cost automatically.
+    
+    Args:
+        temperature: 0.7 default. Use 0.85-0.95 for regeneration variety.
     """
     last_error = None
     
@@ -157,7 +166,7 @@ def call_llm_json(
         if OPENAI_KEY:
             try:
                 print(f"[INFO] Calling OpenAI API (user preferred)...")
-                result = call_openai_json(system, user)
+                result = call_openai_json(system, user, temperature=temperature)
                 track_cost("gpt-4o-mini", 1, state=state)
                 return result
             except Exception as e:
@@ -171,7 +180,7 @@ def call_llm_json(
         for model in CLAUDE_MODEL_CASCADE:
             try:
                 print(f"[INFO] Calling Claude API with {model}...")
-                result = call_claude_json(system, user, model=model, max_tokens=max_tokens)
+                result = call_claude_json(system, user, model=model, max_tokens=max_tokens, temperature=temperature)
                 track_cost(model, 1, state=state)
                 return result
             except HTTPException as e:
@@ -187,7 +196,7 @@ def call_llm_json(
     if preferred.lower() not in ["openai", "gpt"] and OPENAI_KEY:
         try:
             print(f"[INFO] All Claude models failed, trying OpenAI as last resort...")
-            result = call_openai_json(system, user)
+            result = call_openai_json(system, user, temperature=temperature)
             track_cost("gpt-4o-mini", 1, state=state)
             return result
         except Exception as e:

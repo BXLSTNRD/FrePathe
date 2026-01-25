@@ -47,7 +47,7 @@ from services.cast_service import (
     create_cast_visual_dna, update_cast_properties, update_cast_lora,
     delete_cast_from_state, set_character_refs, get_character_refs,
     get_scene_by_id, get_scene_for_shot, get_scene_decor_refs, get_scene_wardrobe,
-    get_identity_url,
+    get_identity_url, build_sorted_cast_info,
 )
 from services.render_service import (
     model_to_endpoint, call_txt2img, call_img2img_editor,
@@ -69,6 +69,7 @@ from services.export_service import (
 from services.video_service import (
     call_img2vid_with_retry, generate_shot_video, generate_videos_for_shots,
     list_video_models, get_video_model_info, VIDEO_MODELS, DEFAULT_VIDEO_MODEL,
+    get_video_model_duration_guidance,
 )
 from services.llm_service import (
     extract_json_object, call_openai_json, call_claude_json,
@@ -1782,10 +1783,14 @@ def api_castmatrix_autogen_scenes(project_id: str, payload: Dict[str,Any]):
         "sequence_id":"seq_01",
         "title":"Scene title matching sequence label",
         "prompt":"location, time of day, camera setup, mood, key props, atmosphere - matching the sequence's story beat",
-        "decor_alt_prompt":"OPTIONAL: Alternative location/decor for flashbacks, dream sequences, or split-timeline shots. Leave empty if not needed.",
-        "wardrobe":"Describe character costumes/outfits for THIS scene. Can differ from default based on story context (e.g. formal event, flashback, work uniform, transformation)"
+        "decor_alt_prompt":"Contrasting location (flashback, dream, before/after) - REQUIRED for some scenes per quota",
+        "wardrobe":"Costume description when story-critical - REQUIRED for some scenes per quota"
     } ] }'''
 
+    # v1.8.7: Fixed quotas for visual variety - 1 alt decor, 2 wardrobe minimum
+    min_decor_alt = 1  # Exactly 1 scene with alternative decor
+    min_wardrobe = 2   # Exactly 2 scenes with wardrobe changes
+    
     system = (
         "Return ONLY valid JSON. No prose.\n"
         f"Generate exactly {count} scene prompts for a music video - ONE scene per sequence.\n\n"
@@ -1800,17 +1805,17 @@ def api_castmatrix_autogen_scenes(project_id: str, payload: Dict[str,Any]):
         "- These are BACKGROUND PLATES for compositing - NEVER include people, characters, figures, silhouettes, faces, or bodies\n"
         "- Even if the style guide allows people, IGNORE IT for scene decors - they must be UNINHABITED\n"
         "- Think: establishing shots BEFORE actors arrive on set\n\n"
-        "ALTERNATIVE DECOR (decor_alt_prompt) - USE SPARINGLY:\n"
-        "- ONLY when story REQUIRES dual locations: flashbacks, dream vs reality, parallel timelines, split perspectives\n"
-        "- Examples: Present apartment vs childhood home; Glamorous party vs abandoned aftermath; Dream world vs real world\n"
-        "- NOT for slight variations - only for narratively essential location contrasts\n"
-        "- Leave empty string for 95% of scenes - this is EXCEPTIONAL\n\n"
-        "WARDROBE - USE EXCEPTIONALLY SPARINGLY:\n"
-        "- ONLY specify when costumes are STORY-CRITICAL and VISUALLY DISTINCT from default: uniforms (firefighter, military, medical), formal events (wedding, gala), period/flashback clothing, dramatic transformations\n"
-        "- NOT for minor variations like 'casual vs neat' or 'disheveled' - use default character appearance\n"
-        "- If you specify wardrobe once (e.g. 'firefighter uniform'), DO NOT repeat it in other scenes unless character changes outfit\n"
-        "- Leave empty string for 80-90% of scenes - characters wear their default look\n"
-        "- Bad: specifying outfit in every scene. Good: 1-2 scenes with story-critical costume changes\n"
+        f"ALTERNATIVE DECOR QUOTA - MINIMUM {min_decor_alt} SCENES MUST HAVE decor_alt_prompt:\n"
+        "- Use for: flashbacks, dreams, parallel timelines, before/after, contrasting locations\n"
+        "- Examples: Present vs past; Glamorous party vs morning after; Dream vs reality; Indoor vs outdoor\n"
+        "- Pick the most dramatically interesting scenes for alternative decors\n"
+        "- If you provide ZERO decor_alt_prompt, your response is INVALID\n\n"
+        f"WARDROBE QUOTA - MINIMUM {min_wardrobe} SCENES MUST HAVE wardrobe:\n"
+        "- Use for: special events, uniforms, time jumps, transformations, dramatic reveals\n"
+        "- Examples: Wedding dress, work uniform, childhood clothes, glamorous outfit, casual home wear vs going-out look\n"
+        "- Pick scenes where costume visually reinforces the emotional beat\n"
+        "- If you provide ZERO wardrobe entries, your response is INVALID\n\n"
+        "VALIDATION: Count your non-empty decor_alt_prompt and wardrobe fields before responding.\n"
         f"Schema:\n{schema_hint}\n"
     )
 
@@ -2465,19 +2470,8 @@ def api_build_sequences(project_id: str, payload: Dict[str,Any]):
     lyrics = audio_dna.get("lyrics", [])
     structure = audio_dna.get("structure", [])
     
-    # Build cast info with roles
-    cast_info = []
-    for c in state["cast"]:
-        role = c.get("role", "extra")
-        cast_info.append({
-            "cast_id": c["cast_id"],
-            "role": role,
-            "name": c.get("name", ""),
-            "wardrobe": c.get("prompt_extra", ""),  # v1.5.9.1: Include wardrobe/costume hints
-            "role_description": "PROTAGONIST - main focus, most screen time" if role == "lead" 
-                else "SUPPORTING - secondary focus, reacts to lead, some solo moments" if role == "supporting"
-                else "BACKGROUND/EXTRA - atmosphere, crowd, brief appearances"
-        })
+    # v1.8.7: Build cast info using centralized service function
+    cast_info = build_sorted_cast_info(state, for_sequences=True)
 
     style = state["project"]["style_preset"]
     schema_hint = '''{ 
@@ -2675,6 +2669,21 @@ def api_expand_all(project_id: str):
     duration_sec = float(meta.get("duration_sec") or 180.0)
     valid_cast = {c["cast_id"] for c in state.get("cast", []) if c.get("cast_id")}
     style = state["project"]["style_preset"]
+    
+    # v1.8.7: Get video model duration constraints from service
+    min_dur, max_dur, duration_guidance = get_video_model_duration_guidance(state)
+    
+    # v1.8.7: Extract global story context for continuity
+    storyboard_data = state.get("storyboard", {}) or {}
+    story_summary = storyboard_data.get("story_summary", "")
+    
+    # v1.8.7: Build beat grid for music synchronization
+    audio_dna = state.get("audio_dna") or {}
+    bpm = meta.get("bpm")
+    beat_grid = build_beat_grid(float(duration_sec), float(bpm) if bpm else 120.0)
+    
+    # v1.8.7: Extract all lyrics for slicing per sequence
+    lyrics_all = audio_dna.get("lyrics") or []
 
     # v1.6.5: Build name-to-id mapping for resolving LLM responses that use names instead of IDs
     name_to_id = {}
@@ -2684,51 +2693,118 @@ def api_expand_all(project_id: str):
         if c.get("cast_id"):
             name_to_id[c["cast_id"].lower()] = c["cast_id"]
 
-    # v1.5.3: Build cast info with roles and impact for shot distribution
-    cast_info = []
-    for c in state.get("cast", []):
-        role = c.get("role", "extra")
-        impact = c.get("impact", 0.1 if role == "extra" else (0.5 if role == "supporting" else 0.7))
-        cast_info.append({
-            "cast_id": c["cast_id"],
-            "name": c.get("name", ""),
-            "role": role.upper(),
-            "impact": f"{int(impact*100)}%",
-            "wardrobe": c.get("prompt_extra", ""),  # v1.5.9.1: Include wardrobe/costume hints
-            "usage": "MUST appear in most shots" if role == "lead" else (
-                "Should appear in ~half the shots" if role == "supporting" else
-                "Should appear in at least 1-2 shots total"
-            )
-        })
+    # v1.8.7: Build cast info using centralized service function
+    cast_info = build_sorted_cast_info(state, for_sequences=False)
 
+    # v1.8.7: Get scenes for wardrobe/decor context
+    scenes = state.get("cast_matrix", {}).get("scenes", [])
+    
     all_shots: List[Dict[str,Any]] = []
-    for seq in seqs:
+    for seq_index, seq in enumerate(seqs):
+        # v1.8.7: Build continuity context (prev/next sequences)
+        prev_seq = seqs[seq_index - 1] if seq_index > 0 else None
+        next_seq = seqs[seq_index + 1] if seq_index < (len(seqs) - 1) else None
+
+        # v1.8.7: Find matching scene for wardrobe/decor context
+        scene_for_seq = next((s for s in scenes if s.get("sequence_id") == seq.get("sequence_id")), None)
+        scene_context = None
+        if scene_for_seq:
+            scene_context = {
+                "wardrobe": scene_for_seq.get("wardrobe", ""),
+                "decor_alt_prompt": scene_for_seq.get("decor_alt_prompt", ""),
+                "decor_prompt": scene_for_seq.get("prompt", ""),
+            }
+        
+        # v1.8.7: Slice beat grid for this sequence's time window
+        seq_start = float(seq.get("start", 0.0))
+        seq_end = float(seq.get("end", 0.0))
+        downbeats_slice = [t for t in (beat_grid.get("downbeats") or []) if seq_start <= t < seq_end]
+        bars_slice = [t for t in (beat_grid.get("bars") or []) if seq_start <= t < seq_end]
+        
+        # v1.8.7: Slice lyrics for this sequence's time window
+        lyrics_slice = []
+        for lyric in lyrics_all:
+            try:
+                l_start = float(lyric.get("start", 0))
+                l_end = float(lyric.get("end", 0))
+                # Include if overlaps with sequence
+                if l_start < seq_end and l_end > seq_start:
+                    lyrics_slice.append({
+                        "start": l_start,
+                        "end": l_end,
+                        "text": lyric.get("text", "")
+                    })
+            except (TypeError, ValueError):
+                continue
+        
         # v1.7.1: Updated schema - shots inherit scene wardrobe unless overridden
         schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"optional override, leave empty to use scene wardrobe"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
+        
+        # v1.8.7: Enhanced system prompt with VIDEO MODEL DURATION
         system = (
             "Return ONLY valid JSON. No prose. No markdown.\n"
             "Expand ONE sequence into 5 to 8 shots.\n"
             "Shots must fit within the sequence start/end. No gaps, no overlaps.\n"
-            "SHOT DURATION: Each shot should be 2-5 seconds. NEVER exceed 5 seconds per shot.\n"
+            f"SHOT DURATION: Each shot MUST be {duration_guidance}. This is a HARD CONSTRAINT from the video generation model.\n\n"
+            "CONTINUITY RULES (v1.8.7):\n"
+            "- You are expanding ONLY the current sequence, but you MUST respect continuity.\n"
+            "- Previous sequence context tells you what JUST HAPPENED - maintain emotional/visual flow.\n"
+            "- Next sequence context tells you what COMES NEXT - build anticipation/setup.\n"
+            "- Story summary gives you the GLOBAL arc - each shot should feel part of that journey.\n"
+            "- If a character was angry in prev sequence, they should start this sequence with residual emotion.\n"
+            "- If next sequence is a reveal, this sequence should build tension toward it.\n\n"
+            "MUSIC SYNC RULES (v1.8.7):\n"
+            "- Downbeats are provided - use them for cuts, reveals, or emphasis moments.\n"
+            "- Align shot transitions to downbeats when possible (not mandatory every beat).\n"
+            "- Lyrics are provided - match visual action to lyrical content when meaningful.\n\n"
             "CRITICAL CAST RULES:\n"
+            "- Cast is sorted by narrative importance (lead → supporting → extra).\n"
             "- LEAD cast members appear in MOST shots (70%+)\n"
             "- SUPPORTING cast members appear in about HALF the shots (50%)\n"
-            "- EXTRA cast members MUST appear in at least 1-2 shots across the video\n"
-            "- EVERY cast member must appear somewhere in the video!\n"
-            "- Use the cast[] array to specify which cast_ids appear in each shot\n"
-            "WARDROBE INHERITANCE (v1.7.1):\n"
-            "- The parent SCENE may have a wardrobe field (e.g., 'firefighter uniforms') that applies to ALL shots in that scene\n"
-            "- ONLY use the per-shot wardrobe object to OVERRIDE scene wardrobe for specific cast members\n"
-            "- Key is cast_id, value is ONLY the override (leave empty {} if scene wardrobe is sufficient)\n"
-            "- Example: Scene has 'formal gala attire', one shot needs 'lead_1 in torn/disheveled gala outfit' after fight\n"
-            "- DO NOT repeat scene wardrobe in every shot - it's inherited automatically\n\n"
+            "- EXTRA cast members MUST have a FUNCTION when they appear (bartender, taxi driver, nurse, etc.)\n"
+            "- NEVER show extras just 'standing around' or 'walking by' - give them PURPOSE and INTERACTION\n"
+            "- Use the cast[] array to specify which cast_ids appear in each shot\n\n"
+            "WARDROBE & DECOR RULES (v1.8.7):\n"
+            "- Scene WARDROBE is provided - it MUST be visible/referenced in shots where cast appears\n"
+            "- If wardrobe says 'leather jacket and torn jeans', the character MUST wear that in prompts\n"
+            "- Scene DECOR_ALT (if provided) is for flashbacks, dreams, or alternate timeline shots\n"
+            "- Use decor_alt deliberately for narrative contrast (present vs past, reality vs dream)\n"
+            "- Reference wardrobe in prompt_base when describing character actions\n"
+            "- ONLY use per-shot wardrobe{} to OVERRIDE scene wardrobe for specific moments\n\n"
+            "STORY DEPTH (v1.8.7):\n"
+            "- Every shot must advance CONFLICT, EMOTION, or REVELATION\n"
+            "- No 'filler' shots - each shot has a micro-purpose in the sequence arc\n"
+            "- Think: What CHANGES between shot start and end? (position, emotion, knowledge, tension)\n"
+            "- Avoid generic actions like 'character looks contemplative' - be SPECIFIC about what they see/do/feel\n\n"
             f"Schema hint:\n{schema_hint}\n"
         )
+        
+        # v1.8.7: Enhanced user payload with continuity + music context
         user = json.dumps({
             "sequence": seq,
             "duration_sec": duration_sec,
             "style_notes": style_script_notes(style),
-            "cast": cast_info,  # v1.5.3: Include full cast info
+            "cast": cast_info,
+            # v1.8.7: Continuity context
+            "story_summary": story_summary,
+            "prev_sequence": {
+                "sequence_id": prev_seq.get("sequence_id"),
+                "description": prev_seq.get("description", ""),
+                "intent": prev_seq.get("intent", ""),
+            } if prev_seq else None,
+            "next_sequence": {
+                "sequence_id": next_seq.get("sequence_id"),
+                "description": next_seq.get("description", ""),
+                "intent": next_seq.get("intent", ""),
+            } if next_seq else None,
+            # v1.8.7: Music sync context
+            "music_context": {
+                "downbeats": downbeats_slice[:20],  # Limit to prevent token bloat
+                "bars": bars_slice[:10],
+                "lyrics": lyrics_slice[:10],
+            },
+            # v1.8.7: Scene wardrobe/decor context - LLM MUST use this in shots
+            "scene_context": scene_context,
         }, ensure_ascii=False)
 
         llm = (state.get("project") or {}).get("llm","claude")
@@ -2750,10 +2826,28 @@ def api_expand_all(project_id: str):
             start = safe_float(sh.get("start", seq["start"]))
             end = safe_float(sh.get("end", seq["end"]))
             
-            # v1.5.3: Warn about long shots but don't cap (would create gaps)
+            # v1.8.7: Validate shot duration against video model constraints
             duration = end - start
-            if duration > 5.0:
-                print(f"[WARN] Shot {shot_id} is {duration:.1f}s (>5s recommended)")
+            if duration < min_dur:
+                print(f"[WARN] Shot {shot_id} is {duration:.1f}s (below {min_dur}s min for video model)")
+                # Extend shot to meet minimum duration
+                end = start + min_dur
+                print(f"[INFO] Extended {shot_id} to {min_dur}s")
+            elif duration > max_dur:
+                print(f"[WARN] Shot {shot_id} is {duration:.1f}s (exceeds {max_dur}s max for video model)")
+            
+            # v1.8.7: Snap shot boundaries to nearest downbeat for music sync
+            # Use downbeats for start (strong beat), bars for end (bar boundary)
+            all_downbeats = beat_grid.get("downbeats") or []
+            if all_downbeats:
+                orig_start, orig_end = start, end
+                start = snap_to_grid(start, all_downbeats, tolerance=0.3)
+                end = snap_to_grid(end, all_downbeats, tolerance=0.3)
+                # Ensure minimum duration is still met after snapping
+                if end - start < min_dur:
+                    end = start + min_dur
+                if start != orig_start or end != orig_end:
+                    print(f"[SYNC] {shot_id}: snapped {orig_start:.2f}-{orig_end:.2f} → {start:.2f}-{end:.2f}")
             
             # v1.6.5: Resolve cast names/ids to valid cast_ids
             resolved_cast = []
@@ -2793,6 +2887,28 @@ def api_expand_all(project_id: str):
                 "render": {"status":"none","image_url":None,"model":None,"error":None},
             })
 
+    # v1.8.7: Validate total shot duration == track duration
+    if all_shots:
+        total_shot_duration = sum(s.get("end", 0) - s.get("start", 0) for s in all_shots)
+        track_duration = float(duration_sec)
+        duration_diff = abs(total_shot_duration - track_duration)
+        
+        if duration_diff > 1.0:  # More than 1 second off
+            print(f"[WARN] Total shot duration ({total_shot_duration:.1f}s) differs from track ({track_duration:.1f}s) by {duration_diff:.1f}s")
+            # Auto-correct: scale all shots proportionally to match track duration
+            if total_shot_duration > 0:
+                scale_factor = track_duration / total_shot_duration
+                current_time = 0.0
+                for shot in all_shots:
+                    shot_dur = (shot["end"] - shot["start"]) * scale_factor
+                    shot["start"] = round(current_time, 3)
+                    shot["end"] = round(current_time + shot_dur, 3)
+                    current_time = shot["end"]
+                # Ensure last shot ends exactly at track duration
+                if all_shots:
+                    all_shots[-1]["end"] = round(track_duration, 3)
+                print(f"[INFO] Auto-scaled shots to match track duration: {track_duration:.1f}s")
+
     state["storyboard"]["shots"] = all_shots
     save_project(state)
     return {"shots_count": len(all_shots), "shots": all_shots}
@@ -2806,14 +2922,49 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
     if not seq_id:
         raise HTTPException(400, "Missing sequence_id")
     seqs = state.get("storyboard", {}).get("sequences", [])
-    seq = next((s for s in seqs if s.get("sequence_id")==seq_id), None)
-    if not seq:
+    seq_index = next((i for i, s in enumerate(seqs) if s.get("sequence_id")==seq_id), None)
+    if seq_index is None:
         raise HTTPException(404, "Sequence not found")
+    seq = seqs[seq_index]
 
     meta = (state.get("audio_dna") or {}).get("meta") or {}
     duration_sec = float(meta.get("duration_sec") or 180.0)
     valid_cast = {c["cast_id"] for c in state.get("cast", []) if c.get("cast_id")}
     style = state["project"]["style_preset"]
+    
+    # v1.8.7: Get video model duration constraints from service
+    min_dur, max_dur, duration_guidance = get_video_model_duration_guidance(state)
+    
+    # v1.8.7: Extract global story context for continuity
+    storyboard_data = state.get("storyboard", {}) or {}
+    story_summary = storyboard_data.get("story_summary", "")
+    
+    # v1.8.7: Build beat grid and extract audio context
+    audio_dna = state.get("audio_dna") or {}
+    bpm = meta.get("bpm")
+    beat_grid = build_beat_grid(float(duration_sec), float(bpm) if bpm else 120.0)
+    lyrics_all = audio_dna.get("lyrics") or []
+    
+    # v1.8.7: Continuity context (prev/next sequences)
+    prev_seq = seqs[seq_index - 1] if seq_index > 0 else None
+    next_seq = seqs[seq_index + 1] if seq_index < (len(seqs) - 1) else None
+    
+    # v1.8.7: Slice beat grid for this sequence's time window
+    seq_start = float(seq.get("start", 0.0))
+    seq_end = float(seq.get("end", 0.0))
+    downbeats_slice = [t for t in (beat_grid.get("downbeats") or []) if seq_start <= t < seq_end]
+    bars_slice = [t for t in (beat_grid.get("bars") or []) if seq_start <= t < seq_end]
+    
+    # v1.8.7: Slice lyrics for this sequence's time window
+    lyrics_slice = []
+    for lyric in lyrics_all:
+        try:
+            l_start = float(lyric.get("start", 0))
+            l_end = float(lyric.get("end", 0))
+            if l_start < seq_end and l_end > seq_start:
+                lyrics_slice.append({"start": l_start, "end": l_end, "text": lyric.get("text", "")})
+        except (TypeError, ValueError):
+            continue
 
     # v1.6.5: Build name-to-id mapping for resolving LLM responses that use names instead of IDs
     name_to_id = {}
@@ -2823,39 +2974,87 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
         if c.get("cast_id"):
             name_to_id[c["cast_id"].lower()] = c["cast_id"]
 
-    # v1.5.3: Build cast info with roles and impact
-    cast_info = []
-    for c in state.get("cast", []):
-        role = c.get("role", "extra")
-        impact = c.get("impact", 0.1 if role == "extra" else (0.5 if role == "supporting" else 0.7))
-        cast_info.append({
-            "cast_id": c["cast_id"],
-            "name": c.get("name", ""),
-            "role": role.upper(),
-            "impact": f"{int(impact*100)}%",
-        })
+    # v1.8.7: Build cast info using centralized service function
+    cast_info = build_sorted_cast_info(state, for_sequences=False)
 
+    # v1.8.7: Find matching scene for wardrobe/decor context
+    scenes = state.get("cast_matrix", {}).get("scenes", [])
+    scene_for_seq = next((s for s in scenes if s.get("sequence_id") == seq_id), None)
+    scene_context = None
+    if scene_for_seq:
+        scene_context = {
+            "wardrobe": scene_for_seq.get("wardrobe", ""),
+            "decor_alt_prompt": scene_for_seq.get("decor_alt_prompt", ""),
+            "decor_prompt": scene_for_seq.get("prompt", ""),
+        }
+    
     # v1.7.1: Shots inherit scene wardrobe unless overridden
     schema_hint = '{ "shots": [ { "shot_id":"seq_01_sh01","start":0.0,"end":1.2,"energy":0.0,"structure_type":"verse","cast":["lead_1"],"wardrobe":{"lead_1":"optional override, leave empty to inherit scene wardrobe"},"intent":"...","camera_language":"...","environment":"...","symbolic_elements":["..."],"prompt_base":"..." } ] }'
+
+    # v1.8.7: Enhanced system prompt with VIDEO MODEL DURATION
     system = (
         "Return ONLY valid JSON. No prose. No markdown.\n"
         "Expand ONE sequence into 5 to 8 shots.\n"
         "Shots must fit within the sequence start/end. No gaps, no overlaps.\n"
-        "SHOT DURATION: Each shot should be 2-5 seconds. NEVER exceed 5 seconds per shot.\n"
-        "WARDROBE INHERITANCE (v1.7.1):\n"
-        "- The parent SCENE may have a wardrobe field (e.g., 'firefighter uniforms') that applies to ALL shots in that scene\n"
-        "- ONLY use the per-shot wardrobe object to OVERRIDE scene wardrobe for specific cast members\n"
-        "- Key is cast_id, value is ONLY the override (leave empty {} if scene wardrobe is sufficient)\n"
-        "- Example: Scene has 'formal gala attire', one shot needs 'lead_1 in torn/disheveled gala outfit' after fight\n"
-        "- DO NOT repeat scene wardrobe in every shot - it's inherited automatically\n\n"
+        f"SHOT DURATION: Each shot MUST be {duration_guidance}. This is a HARD CONSTRAINT from the video generation model.\n\n"
+        "CONTINUITY RULES (v1.8.7):\n"
+        "- You are expanding ONLY the current sequence, but you MUST respect continuity.\n"
+        "- Previous sequence context tells you what JUST HAPPENED - maintain emotional/visual flow.\n"
+        "- Next sequence context tells you what COMES NEXT - build anticipation/setup.\n"
+        "- Story summary gives you the GLOBAL arc - each shot should feel part of that journey.\n"
+        "- If a character was angry in prev sequence, they should start this sequence with residual emotion.\n"
+        "- If next sequence is a reveal, this sequence should build tension toward it.\n\n"
+        "MUSIC SYNC RULES (v1.8.7):\n"
+        "- Downbeats are provided - use them for cuts, reveals, or emphasis moments.\n"
+        "- Align shot transitions to downbeats when possible (not mandatory every beat).\n"
+        "- Lyrics are provided - match visual action to lyrical content when meaningful.\n\n"
+        "CRITICAL CAST RULES:\n"
+        "- Cast is sorted by narrative importance (lead → supporting → extra).\n"
+        "- LEAD cast members appear in MOST shots (70%+)\n"
+        "- SUPPORTING cast members appear in about HALF the shots (50%)\n"
+        "- EXTRA cast members MUST have a FUNCTION when they appear (bartender, taxi driver, nurse, etc.)\n"
+        "- NEVER show extras just 'standing around' or 'walking by' - give them PURPOSE and INTERACTION\n\n"
+        "WARDROBE & DECOR RULES (v1.8.7):\n"
+        "- Scene WARDROBE is provided - it MUST be visible/referenced in shots where cast appears\n"
+        "- If wardrobe says 'leather jacket and torn jeans', the character MUST wear that in prompts\n"
+        "- Scene DECOR_ALT (if provided) is for flashbacks, dreams, or alternate timeline shots\n"
+        "- Use decor_alt deliberately for narrative contrast (present vs past, reality vs dream)\n"
+        "- Reference wardrobe in prompt_base when describing character actions\n"
+        "- ONLY use per-shot wardrobe{} to OVERRIDE scene wardrobe for specific moments\n\n"
+        "STORY DEPTH (v1.8.7):\n"
+        "- Every shot must advance CONFLICT, EMOTION, or REVELATION\n"
+        "- No 'filler' shots - each shot has a micro-purpose in the sequence arc\n"
+        "- Think: What CHANGES between shot start and end? (position, emotion, knowledge, tension)\n"
+        "- Avoid generic actions like 'character looks contemplative' - be SPECIFIC about what they see/do/feel\n\n"
         f"Schema hint:\n{schema_hint}\n"
     )
 
+    # v1.8.7: Enhanced user payload with continuity + music context
     user = json.dumps({
         "sequence": seq,
         "duration_sec": duration_sec,
         "style_notes": style_script_notes(style),
         "cast": cast_info,
+        # v1.8.7: Continuity context
+        "story_summary": story_summary,
+        "prev_sequence": {
+            "sequence_id": prev_seq.get("sequence_id"),
+            "description": prev_seq.get("description", ""),
+            "intent": prev_seq.get("intent", ""),
+        } if prev_seq else None,
+        "next_sequence": {
+            "sequence_id": next_seq.get("sequence_id"),
+            "description": next_seq.get("description", ""),
+            "intent": next_seq.get("intent", ""),
+        } if next_seq else None,
+        # v1.8.7: Music sync context
+        "music_context": {
+            "downbeats": downbeats_slice[:20],
+            "bars": bars_slice[:10],
+            "lyrics": lyrics_slice[:10],
+        },
+        # v1.8.7: Scene wardrobe/decor context - LLM MUST use this in shots
+        "scene_context": scene_context,
     }, ensure_ascii=False)
 
     llm = (state.get("project") or {}).get("llm","claude")
@@ -2875,10 +3074,27 @@ def api_expand_sequence(project_id: str, payload: Dict[str,Any]):
         start = safe_float(sh.get("start", seq["start"]))
         end = safe_float(sh.get("end", seq["end"]))
 
-        # v1.5.3: Warn about long shots
+        # v1.8.7: Validate shot duration against video model constraints
         duration = end - start
-        if duration > 5.0:
-            print(f"[WARN] Shot {shot_id} is {duration:.1f}s (>5s recommended)")
+        if duration < min_dur:
+            print(f"[WARN] Shot {shot_id} is {duration:.1f}s (below {min_dur}s min for video model)")
+            # Extend shot to meet minimum duration
+            end = start + min_dur
+            print(f"[INFO] Extended {shot_id} to {min_dur}s")
+        elif duration > max_dur:
+            print(f"[WARN] Shot {shot_id} is {duration:.1f}s (exceeds {max_dur}s max for video model)")
+        
+        # v1.8.7: Snap shot boundaries to nearest downbeat for music sync
+        all_downbeats = beat_grid.get("downbeats") or []
+        if all_downbeats:
+            orig_start, orig_end = start, end
+            start = snap_to_grid(start, all_downbeats, tolerance=0.3)
+            end = snap_to_grid(end, all_downbeats, tolerance=0.3)
+            # Ensure minimum duration is still met after snapping
+            if end - start < min_dur:
+                end = start + min_dur
+            if start != orig_start or end != orig_end:
+                print(f"[SYNC] {shot_id}: snapped {orig_start:.2f}-{orig_end:.2f} → {start:.2f}-{end:.2f}")
 
         # v1.6.5: Resolve cast names/ids to valid cast_ids
         resolved_cast = []

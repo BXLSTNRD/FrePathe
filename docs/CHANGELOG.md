@@ -1,5 +1,180 @@
 # Changelog
 
+# Fré Pathé v1.8.8 - Workflow Fixes & Migration Removal (2026-01-25)
+
+**Release Date:** 2026-01-25  
+**Agent:** GitHub Copilot Claude Sonnet 4.5  
+**Score:** 10/10 (Critical bugfixes + migration cleanup)
+
+## 🐛 Critical Bugfixes
+
+### UI Bug #1: Video Toggle Fixed
+- **Problem:** `toggleShotView()` gebruikte `storyboard.find()` ipv `storyboard.shots.find()`
+- **Fix:** Toegevoegd `.shots` in query path
+- **Impact:** Video toggle button werkt nu correct
+
+### UI Bug #2: Preview Slideshow Fixed
+- **Problem:** `exportVideo()` schreef naar non-existent `videoResult` element
+- **Fix:** Update `previewPlayer.src` direct, verwijder `videoResult` refs
+- **Impact:** Preview slideshow laadt nu correct
+
+### UI Bug #3: Video Toggle Edit Fields
+- **Problem:** Edit fields bleven zichtbaar bij video view
+- **Fix:** Toggle video → hide edit fields, toggle thumb → show edit fields
+- **Addition:** Rerender knop blijft altijd zichtbaar (zowel video als thumb)
+- **Impact:** Cleaner UI, logische workflow
+
+## 🚨 CRITICAL: Migration System Removed (v1.8.5 Rollback)
+
+### Cross-Project Contamination Bug
+- **Discovery:** "You on my mind" project importeerde assets van "La Chaudasse" project
+- **Root Cause:** `if pid[:8] in folder.name` matching was te breed, matchte verkeerde projects
+- **User Decision:** "Migration kan de boom in" - complete removal preferred over fixing
+
+### Migration Logic Stripped
+- **File:** `main.py`
+- **Function:** `_gather_referenced_assets()` - Removed legacy folder scanning
+  - No more `data/projects/` UUID matching
+  - Only scans current `project_location` folder
+  - No orphaned file detection/linking
+- **Function:** `_update_state_paths()` - Removed orphan linking
+  - No more `gathered_videos`/`gathered_audio` params
+  - Only updates URLs to new project folder
+  - No automatic video/audio linking to shots/audio_dna
+- **Endpoint:** `api_save_to_folder()` - Simplified call
+  - Removed `gathered.get("video")` and `gathered.get("audio")` params
+  - Clean path updates only
+
+### Impact
+- **Migration:** Users must manually save projects to new locations
+- **Legacy Data:** No more automatic import from old `data/projects/` folders
+- **Data Integrity:** No cross-contamination, clean project boundaries
+- **User Quote:** "Geen oude projecten meer vanaf nu. EN GEEN LEGACY FOLDER MEER IN DATA"
+
+## ✨ Workflow Improvements
+
+### Sequence Selection Filtering
+- **RENDER SHOTS:** Respecteert sequence selectie (was al correct)
+- **RENDER VIDEO:** Nu ook sequence-aware filtering toegevoegd
+  - Als sequences geselecteerd: alleen die sequences
+  - Anders: alle sequences
+- **Logic:** Beide gebruiken `SELECTED_SEQUENCE_IDS.length > 0` check
+
+### Timeline Deselection
+- **Feature:** Klik buiten timeline segments → deselect all sequences
+- **Function:** `deselectIfOutside(event)` toegevoegd
+- **Impact:** Cleaner workflow, makkelijker resetten van selectie
+
+## 📂 Files Modified
+- `main.py` - Migration logic volledig verwijderd (6 edits)
+- `static/app.js` - Video toggle fixes, sequence filtering, timeline deselect
+- `services/config.py` - VERSION bump naar 1.8.8
+- `templates/index.html` - Version updates (title + header)
+
+## 🧹 Technical Debt Removed
+- v1.8.5 migration system: ~200 lines code verwijderd
+- Legacy folder scanning: gone
+- Orphaned asset linking: gone
+- Cross-project contamination risk: eliminated
+
+---
+
+# Fré Pathé v1.8.7.2 - Timeline & Shot Card UI Refinements (2026-01-25)
+
+**Release Date:** 2026-01-25  
+**Agent:** GitHub Copilot Claude Sonnet 4.5  
+**Score:** TBD (In testing)
+
+## 🎨 Timeline Scene Cards
+
+### Icon Cleanup
+- **Removed:** Old SVG icons inside thumbnails (wardrobe/lock)
+- **Replaced by:** Icon row at bottom-right of cards (outside thumb area)
+
+### Lock Icon Addition
+- Lock indicator toegevoegd aan timeline card icons (rechts uitgelijnd)
+- Positioning: Altscene (couch) → Wardrobe (hanger) → Lock (lock.png)
+- States: Greyed out (25% opacity) when unlocked, Yellow filter when locked
+- Icon formaat: 14px consistent met andere indicators
+
+## 🔒 Scene Popup Lock Icons
+
+### Visual Consistency
+- Lock buttons in scene popup (Decor 1 + Wardrobe) gebruiken nu lock.png ipv emoji
+- States: Greyed out (25% opacity) unlocked, Yellow filter locked
+- Formaat: 14px, zelfde styling als timeline indicators
+
+## 🎬 Shot Cards Redesign
+
+### Video Button Repositioning
+- **Verplaatst van:** Aparte video row onder edit controls
+- **Naar:** Cast badge lijn, rechts uitgelijnd
+- Flex layout: Cast badge links, Video button rechts
+- States:
+  - Greyed out: Geen video gerenderd (generate functie)
+  - Yellow: Video view actief (toggle functie)
+
+### Video/Thumb Toggle System
+- Video button toggles tussen thumb en video view
+- **Thumb mode:** Image + version nav + rerender button + edit row visible
+- **Video mode:** Video player replaces thumb, edit row hidden
+- Card height blijft constant (aspect-ratio 16/9)
+- View state per shot tracked in `SHOT_VIEW_MODE`
+- DOM manipulation: alleen card update, geen grid re-render
+
+### Video Player
+- Controls enabled
+- Replaces thumbnail in render container
+- Same aspect ratio as thumbnail
+
+## 📂 Files Modified
+- `static/app.js` - Timeline icons, scene popup locks, shot card toggle system
+- `templates/index.html` - Lock button HTML structure
+- `static/style.css` - Icon styling, video button states, video player
+
+---
+
+# Fré Pathé v1.8.7.1 - UI/UX Layout Update (2026-01-25)
+
+**Release Date:** 2026-01-25  
+**Agent:** GitHub Copilot Claude Opus 4.5  
+**Score:** 8/10 (Goed werk, kleine scope creep gecorrigeerd)
+
+## 🎨 UI Layout Changes
+
+### Preview + Animate Side-by-Side
+- Preview en Animate modules staan nu naast elkaar (zoals Audio DNA + Cast Matrix)
+- Beide modules hebben collapsible headers met ▼/▶ pijltjes
+- Beide modules bevatten een videoplayer
+
+### Preview Module Simplified
+- Knop hernoemd: "EXPORT PREVIEW (STILLS)" → "MAKE SLIDESHOW"
+- Resolution selector en extra tekst verwijderd
+
+### Animate Module Simplified  
+- Knop hernoemd: "GENERATE ALL VIDEOS" verplaatst naar Storyboard/Shots
+- Nieuwe knop: "MAKE VIDEO" (was EXPORT ANIMATED functie)
+- Status teller verwijderd (wordt later geïntegreerd)
+
+### Storyboard Module Restructure
+- MASTER prompt verplaatst naar Storyboard header (rechts uitgelijnd)
+- Knoppen "CREATE TIMELINE" → "MAKE SCENES", "ALL SHOTS" → "MAKE SHOTS"
+- Knoppen verplaatst naar Timeline sectie header (rechts uitgelijnd)
+- Timeline/Shots subtitels: lowercase grijs (niet meer CAPS)
+- Grey divider lines tussen subsections verwijderd
+- "RENDER ALL" → "RENDER SHOTS"
+- Nieuwe knop "RENDER VIDEO" toegevoegd naast "RENDER SHOTS"
+- Refresh knop (⟳) verwijderd
+
+### Cast Matrix
+- Plus-knop (+) nu verticaal gecentreerd tussen laatste cast card en module onderrand
+
+### Button States
+- "RENDER VIDEO", "MAKE SLIDESHOW", "MAKE VIDEO" zijn disabled by default
+- Worden enabled wanneer shots/videos gerenderd zijn
+
+---
+
 # Fré Pathé v1.8.7 - Storyboard Bug Fixes + Wardrobe Discovery (2026-01-24/25)
 
 **Release Date:** 2026-01-25  

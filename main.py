@@ -127,97 +127,41 @@ def get_project(project_id: str) -> Dict[str, Any]:
 
 def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
     """
-    v1.8.5: LAZY MIGRATION - Find actual asset files in legacy locations.
+    v1.8.9: MIGRATION DISABLED - No more legacy folder scanning.
     
-    CRITICAL: Only match folders by UUID, NEVER by title!
-    Title matching caused assets from other projects with similar names to be gathered.
-    
-    TWO-PHASE APPROACH:
-    1. Resolve URLs from state (renders, audio referenced in JSON)
-    2. SCAN legacy folders (UUID-matched only) for orphaned videos not in JSON
+    Only gathers assets that are CURRENTLY in project_location.
+    No cross-project contamination risk.
     
     Returns dict with 'renders', 'audio', 'video', 'llm' lists of Path objects.
     """
     result = {"renders": [], "audio": [], "video": [], "llm": []}
     
-    # Defensive: handle None state
+    # v1.8.9: ONLY gather from current project_location, NO legacy scanning
     if not state:
-        print("[GATHER] WARNING: state is None, returning empty result")
         return result
     
-    pid = state.get("project", {}).get("id", "") if state.get("project") else ""
-    title = state.get("project", {}).get("title", "") if state.get("project") else ""
+    project_location = state.get("project", {}).get("project_location")
+    if not project_location or not Path(project_location).exists():
+        print("[GATHER] No project_location set - nothing to gather")
+        return result
     
-    # Build list of legacy folders to scan - ONLY UUID MATCHING
-    legacy_folders = []
-    
-    # 1. Current project_location (if set and exists)
-    if state.get("project", {}).get("project_location"):
-        loc = Path(state["project"]["project_location"])
-        if loc.exists():
-            legacy_folders.append(loc)
-    
-    # 2. Scan for folders in data/projects/ that contain THIS project's UUID
-    # NEVER match by title - that's what caused cross-project contamination!
-    if pid:
-        projects_dir = PATH_MANAGER.workspace_root / "projects"
-        if projects_dir.exists():
-            for folder in projects_dir.iterdir():
-                if folder.is_dir() and pid[:8] in folder.name:
-                    if folder not in legacy_folders:
-                        legacy_folders.append(folder)
-        
-        # 3. Also check data/renders/ for UUID-prefixed files
-        renders_dir = PATH_MANAGER.workspace_root / "renders"
-        if renders_dir.exists() and renders_dir not in legacy_folders:
-            # Don't add whole folder, but we'll scan for UUID-prefixed files later
-            pass
-    
-    print(f"[GATHER] Scanning {len(legacy_folders)} legacy folders for project UUID '{pid[:8] if pid else 'NEW'}'")
-    for f in legacy_folders:
-        print(f"[GATHER]   - {f.name}")
+    project_folder = Path(project_location)
+    print(f"[GATHER] Scanning ONLY project folder: {project_folder.name}")
     
     def resolve_url_to_path(url: str) -> Optional[Path]:
-        """Convert URL or path reference to actual file Path."""
+        """Convert URL to path - ONLY checks project_location, NO legacy folders."""
         if not url:
             return None
         if url.startswith("http://") or url.startswith("https://"):
-            return None  # External URL - can't gather
+            return None  # External URL
         
-        # Try /renders/projects/... format (common legacy format)
-        if url.startswith("/renders/"):
-            rel_path = url[9:]  # Remove "/renders/"
-            full_path = PATH_MANAGER.workspace_root / rel_path
-            if full_path.exists():
-                return full_path
-            # Also try just the filename in UUID-matched legacy folders
-            filename = Path(url).name
-            for folder in legacy_folders:
-                for subdir in ["renders", "video", "audio", ""]:
-                    candidate = folder / subdir / filename if subdir else folder / filename
-                    if candidate.exists():
-                        return candidate
-            # Also check data/renders/ for UUID-prefixed files (legacy format: {uuid}_{filename}.png)
-            if pid:
-                renders_dir = PATH_MANAGER.workspace_root / "renders"
-                if renders_dir.exists():
-                    for f in renders_dir.glob(f"{pid[:8]}*"):
-                        if f.name.endswith(filename) or filename in f.name:
-                            return f
+        filename = Path(url).name
         
-        # Try /files/... format
-        if url.startswith("/files/"):
-            rel_path = url[7:]  # Remove "/files/"
-            full_path = PATH_MANAGER.workspace_root / rel_path
-            if full_path.exists():
-                return full_path
-            # Also check in UUID-matched legacy folders
-            filename = Path(url).name
-            for folder in legacy_folders:
-                for subdir in ["renders", "video", "audio", ""]:
-                    candidate = folder / subdir / filename if subdir else folder / filename
-                    if candidate.exists():
-                        return candidate
+        # Check project folder subdirs
+        for subdir in ["renders", "video", "audio", "exports", ""]:
+            candidate = project_folder / subdir / filename if subdir else project_folder / filename
+            if candidate.exists():
+                return candidate
         
         # Try as absolute path
         if Path(url).is_absolute() and Path(url).exists():
@@ -225,29 +169,26 @@ def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
         
         return None
     
-    # ========= ONLY gather assets that are ACTUALLY REFERENCED in state =========
-    # Gather renders from shots (by URL)
+    # Gather ONLY referenced assets from project_location
+    
+    # Renders from shots
     for shot in state.get("storyboard", {}).get("shots", []):
         render_url = shot.get("render", {}).get("image_url")
         if render_url:
             path = resolve_url_to_path(render_url)
             if path and path not in result["renders"]:
                 result["renders"].append(path)
-                # Also check for thumbnail
                 thumb = path.with_name(path.stem + "_thumb.webp")
                 if thumb.exists() and thumb not in result["renders"]:
                     result["renders"].append(thumb)
         
-        # Video (by URL) - check both correct location (render.video) and legacy (video)
         video_url = shot.get("render", {}).get("video", {}).get("video_url")
-        if not video_url:
-            video_url = shot.get("video", {}).get("video_url")  # Legacy location
         if video_url:
             path = resolve_url_to_path(video_url)
             if path and path not in result["video"]:
                 result["video"].append(path)
     
-    # Gather cast refs (by URL)
+    # Cast refs
     for cast_id, refs in state.get("cast_matrix", {}).get("character_refs", {}).items():
         for ref_key in ["ref_a", "ref_b"]:
             ref_url = refs.get(ref_key)
@@ -269,7 +210,7 @@ def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
             if path and path not in result["renders"]:
                 result["renders"].append(path)
     
-    # Gather audio (by URL) - audio_dna can be None, not just empty dict
+    # Audio
     audio_dna = state.get("audio_dna") or {}
     audio_url = audio_dna.get("source_url")
     if audio_url:
@@ -277,83 +218,22 @@ def _gather_referenced_assets(state: Dict[str, Any]) -> Dict[str, List[Path]]:
         if path and path not in result["audio"]:
             result["audio"].append(path)
     
-    # ========= Scan for orphaned audio (exists in folder but not in JSON) =========
-    if not result["audio"]:
-        print(f"[GATHER] No audio in JSON, scanning legacy folders for audio files...")
-        for folder in legacy_folders:
-            audio_dir = folder / "audio"
-            if audio_dir.exists() and audio_dir.is_dir():
-                for ext in ["*.mp3", "*.wav", "*.flac", "*.m4a", "*.ogg"]:
-                    for f in audio_dir.glob(ext):
-                        if f not in result["audio"]:
-                            result["audio"].append(f)
-                            print(f"[GATHER] Found orphaned audio: {f.name} in {folder.name}")
-        # Only keep the most recent one if multiple found (from highest version folder)
-        if len(result["audio"]) > 1:
-            # Sort by parent folder name (version) descending, take first
-            result["audio"].sort(key=lambda p: p.parent.parent.name, reverse=True)
-            kept = result["audio"][0]
-            result["audio"] = [kept]
-            print(f"[GATHER] Multiple audio files found, keeping: {kept.name}")
-    
-    # ========= ONLY for videos: scan for orphaned files (not in JSON but should be linked) =========
-    # Get shot IDs that DON'T have video_url set (check both locations)
-    shots_without_video = []
-    for shot in state.get("storyboard", {}).get("shots", []):
-        has_video = (shot.get("render", {}).get("video", {}).get("video_url") or 
-                     shot.get("video", {}).get("video_url"))
-        if not has_video:
-            shot_id = shot.get("shot_id", "")
-            if shot_id:
-                shots_without_video.append(shot_id)
-    
-    if shots_without_video:
-        print(f"[GATHER] Looking for orphaned videos for {len(shots_without_video)} shots without video_url")
-        for folder in legacy_folders:
-            video_dir = folder / "video"
-            if video_dir.exists() and video_dir.is_dir():
-                for ext in ["*.mp4", "*.webm", "*.mov"]:
-                    for f in video_dir.glob(ext):
-                        # Check if this video matches a shot without video
-                        import re
-                        name_lower = f.stem.lower()
-                        for shot_id in shots_without_video:
-                            shot_lower = shot_id.lower().replace("_", "")
-                            # Match patterns like video_seq_01_sh01 with seq_01_sh01
-                            if shot_lower.replace("_", "") in name_lower.replace("_", ""):
-                                if f not in result["video"]:
-                                    result["video"].append(f)
-                                    print(f"[GATHER] Found orphaned video: {f.name} for {shot_id}")
-                                break
-    
-    # ========= Gather LLM/Director logs from CURRENT project folder only =========
-    # (not from other style versions)
-    current_folder = None
-    if state.get("project", {}).get("project_location"):
-        current_folder = Path(state["project"]["project_location"])
-    else:
-        # Find the most recent matching folder (highest version)
-        for folder in sorted(legacy_folders, reverse=True):
-            if folder.exists():
-                current_folder = folder
-                break
-    
-    if current_folder:
-        for subdir_name in ["llm", "director"]:
-            subdir = current_folder / subdir_name
-            if subdir.exists() and subdir.is_dir():
-                for json_file in subdir.glob("*.json"):
-                    if json_file not in result["llm"]:
-                        result["llm"].append(json_file)
+    # LLM logs
+    for subdir_name in ["llm", "director"]:
+        subdir = project_folder / subdir_name
+        if subdir.exists():
+            for json_file in subdir.glob("*.json"):
+                if json_file not in result["llm"]:
+                    result["llm"].append(json_file)
     
     print(f"[GATHER] Found {len(result['renders'])} renders, {len(result['audio'])} audio, {len(result['video'])} video, {len(result['llm'])} llm logs")
     return result
 
 
-def _update_state_paths(state: Dict[str, Any], new_project_folder: Path, gathered_videos: List[Path] = None, gathered_audio: List[Path] = None) -> Dict[str, Any]:
+def _update_state_paths(state: Dict[str, Any], new_project_folder: Path) -> Dict[str, Any]:
     """
-    v1.8.5: Update all URL references in state to point to new project folder.
-    Also links orphaned videos to shots and orphaned audio to audio_dna.
+    v1.9: MIGRATION DISABLED - no orphan linking.
+    Only updates URLs to point to new project folder if assets exist.
     """
     def make_new_url(filename: str, asset_type: str) -> str:
         """Generate new /files/ URL for asset."""
@@ -371,61 +251,26 @@ def _update_state_paths(state: Dict[str, Any], new_project_folder: Path, gathere
         filename = Path(url).name
         return make_new_url(filename, asset_type)
     
-    # Build video lookup by shot identifier (for orphaned videos)
-    video_lookup = {}
-    if gathered_videos:
-        for vpath in gathered_videos:
-            # Extract shot ID from filename like "video_seq_01_sh01.mp4"
-            name = vpath.stem.lower()
-            # Try patterns: video_seq_XX_shYY, seq_XX_sh_YY, seqXX_shYY
-            import re
-            match = re.search(r'seq[_]?(\d+)[_]?sh[_]?(\d+)', name)
-            if match:
-                seq_num, shot_num = match.groups()
-                key = f"seq{seq_num.zfill(2)}_sh{shot_num.zfill(2)}"
-                video_lookup[key] = vpath
-    
     # Update shot renders and videos
     for shot in state.get("storyboard", {}).get("shots", []):
         if shot.get("render", {}).get("image_url"):
             shot["render"]["image_url"] = update_url(shot["render"]["image_url"], "render")
         
-        # Video is stored at shot["render"]["video"]["video_url"] (frontend compatible)
-        # But old migrations may have put it at shot["video"]["video_url"]
-        # Check both locations and normalize to shot["render"]["video"]
+        # Video is stored at shot["render"]["video"]["video_url"]
         existing_video_url = None
         
-        # Check correct location first
         if shot.get("render", {}).get("video", {}).get("video_url"):
             existing_video_url = shot["render"]["video"]["video_url"]
-        # Check legacy location
+        # Check legacy location and normalize
         elif shot.get("video", {}).get("video_url"):
             existing_video_url = shot["video"]["video_url"]
-            # Clean up legacy location
             del shot["video"]
         
         if existing_video_url:
-            # Update existing video URL
             new_url = update_url(existing_video_url, "video")
             if "render" not in shot:
                 shot["render"] = {}
             shot["render"]["video"] = {"video_url": new_url}
-        else:
-            # Try to link orphaned video by shot ID
-            shot_id = shot.get("shot_id", "")
-            # shot_id format: "seq_01_sh01" or similar
-            import re
-            match = re.search(r'seq[_]?(\d+)[_]?sh[_]?(\d+)', shot_id.lower())
-            if match:
-                seq_num, shot_num = match.groups()
-                key = f"seq{seq_num.zfill(2)}_sh{shot_num.zfill(2)}"
-                if key in video_lookup:
-                    vpath = video_lookup[key]
-                    new_url = make_new_url(vpath.name, "video")
-                    if "render" not in shot:
-                        shot["render"] = {}
-                    shot["render"]["video"] = {"video_url": new_url}
-                    print(f"[MIGRATE] Linked orphaned video {vpath.name} to shot {shot_id}")
     
     # Update cast refs
     for cast_id, refs in state.get("cast_matrix", {}).get("character_refs", {}).items():
@@ -441,18 +286,9 @@ def _update_state_paths(state: Dict[str, Any], new_project_folder: Path, gathere
         if scene.get("wardrobe_ref"):
             scene["wardrobe_ref"] = update_url(scene["wardrobe_ref"], "render")
     
-    # Update audio - also link orphaned audio if source_url is empty
-    audio_dna = state.get("audio_dna") or {}
-    if audio_dna.get("source_url"):
+    # Update audio
+    if state.get("audio_dna", {}).get("source_url"):
         state["audio_dna"]["source_url"] = update_url(state["audio_dna"]["source_url"], "audio")
-    elif gathered_audio and len(gathered_audio) > 0:
-        # Link first orphaned audio file to audio_dna
-        audio_file = gathered_audio[0]
-        new_url = make_new_url(audio_file.name, "audio")
-        if "audio_dna" not in state:
-            state["audio_dna"] = {}
-        state["audio_dna"]["source_url"] = new_url
-        print(f"[MIGRATE] Linked orphaned audio {audio_file.name} to audio_dna.source_url")
     
     return state
 
@@ -552,6 +388,11 @@ def static_couch():
 def static_hanger():
     from fastapi.responses import FileResponse
     return FileResponse(str(STATIC_DIR / "hanger.png"), media_type="image/png")
+
+@app.get("/static/lock.png")
+def static_lock():
+    from fastapi.responses import FileResponse
+    return FileResponse(str(STATIC_DIR / "lock.png"), media_type="image/png")
 
 @app.get("/files/{filepath:path}")
 def serve_file(filepath: str):
@@ -975,8 +816,8 @@ def api_save_to_folder(project_id: str, payload: Dict[str, Any]):
         if copy_stats["errors"]:
             print(f"[SAVE] Errors: {copy_stats['errors']}")
         
-        # ========= Update paths in state (pass gathered videos AND audio for orphan linking) =========
-        state = _update_state_paths(state, project_folder, gathered.get("video", []), gathered.get("audio", []))
+        # ========= Update paths in state =========
+        state = _update_state_paths(state, project_folder)
         
         # Set location and save
         state["project"]["project_location"] = str(project_folder)

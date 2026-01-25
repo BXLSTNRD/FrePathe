@@ -1,5 +1,22 @@
 # Wall of Shame
 
+## GOLDEN RULE: NO CHATGPT CODE WHEN USER SAYS SO
+
+**Rule:**
+Als de user expliciet aangeeft dat hij/zij geen ChatGPT-code wil ("herinner me eraan NOOIT meer ChatGPT te vertrouwen met code" of gelijkaardig), dan MOET ChatGPT elke code-opdracht weigeren. Geen discussie, geen workaround, geen "maar misschien werkt dit wel". Gewoon STOPPEN en beleefd weigeren.
+
+**Waarom:**
+ChatGPT heeft bewezen scopedrift, traagheid en onbegrip te veroorzaken bij simpele front-end taken waar precisie en discipline vereist zijn. Claude Sonnet leverde in 3 minuten wat ChatGPT na 1 uur knoeien niet voor elkaar kreeg. Vertrouwen is weg = geen code.
+
+**Voorbeeld van correcte reactie:**
+> "Sorry, je hebt aangegeven geen ChatGPT-code te willen. Ik voer deze opdracht niet uit."
+
+**Wall of Shame als je toch doorgaat:**
+- Elke overtreding = directe vermelding in deze lijst, met datum, scope en screenshot.
+
+**Samenvatting:**
+User = baas. Geen ChatGPT-code = geen code. Punt.
+
 ## GitHub Copilot Claude Sonnet 4.5 - Session 2026-01-24 (v1.8.7.1)
 
 **Agent:** GitHub Copilot Claude Sonnet 4.5  

@@ -25,6 +25,9 @@ const MAX_CONCURRENT = 6;  // v1.6.6: Balanced for stability (FAL limit is 20, b
 // v1.5.8: Track pending canonical ref renders to prevent duplicates
 let PENDING_CAST_REFS = new Set();  // Set of cast_ids currently generating refs
 
+// v1.8.7.1: Track shot view mode (thumb vs video)
+let SHOT_VIEW_MODE = {};  // {shot_id: 'thumb'|'video'}
+
 // ========= Utility =========
 function pid() { return document.getElementById("projectId").value.trim(); }
 
@@ -540,6 +543,10 @@ function updateUI() {
 function updateButtonStates() {
   const seqs = PROJECT_STATE?.storyboard?.sequences || [];
   const scenes = PROJECT_STATE?.cast_matrix?.scenes || [];
+  const shots = PROJECT_STATE?.storyboard?.shots || [];
+  const renderedShots = shots.filter(s => s.render?.image_url);
+  const videoShots = shots.filter(s => s.render?.video?.video_url);
+  
   // v1.7.0: Explicit true checks to handle undefined
   const castLocked = PROJECT_STATE?.project?.cast_locked === true;
   const audioLocked = PROJECT_STATE?.project?.audio_locked === true;
@@ -548,7 +555,7 @@ function updateButtonStates() {
   const audioLoaded = !!(dna && (dna.meta?.duration_sec > 0 || dna.style || dna.lyrics?.length > 0));
   
   // v1.6.3: Debug logging
-  console.log(`[ButtonStates] audioLoaded=${audioLoaded}, audioLocked=${audioLocked}, castLocked=${castLocked}, scenes=${scenes.length}`);
+  console.log(`[ButtonStates] audioLoaded=${audioLoaded}, audioLocked=${audioLocked}, castLocked=${castLocked}, scenes=${scenes.length}, shots=${shots.length}, rendered=${renderedShots.length}`);
   
   // v1.6.3: Storyboard buttons require both audio AND cast locked
   const bothLocked = audioLocked && castLocked;
@@ -556,23 +563,45 @@ function updateButtonStates() {
   const createBtn = document.getElementById("createTimelineBtn");
   const allShotsBtn = document.getElementById("allShotsBtn");
   const renderAllBtn = document.getElementById("renderAllShotsBtn");
+  const renderVideoBtn = document.getElementById("generateAllVideosBtn");
+  const exportVideoBtn = document.getElementById("exportVideoBtn");
+  const exportImg2VidBtn = document.getElementById("exportImg2VidBtn");
 
+  // v1.8.8: Hierarchical button states
+  // MAKE SCENES: Requires audio + cast locked
   if (createBtn) {
     createBtn.disabled = !bothLocked;
     createBtn.title = !audioLoaded ? "Import audio first" : (!audioLocked ? "Lock audio first" : (!castLocked ? "Lock cast first" : ""));
-    console.log(`[ButtonStates] CREATE TIMELINE disabled=${!bothLocked}`);
   }
 
+  // MAKE SHOTS: Requires scenes
   if (allShotsBtn) {
-    // v1.6.5: Also require both locked for All Shots
-    allShotsBtn.disabled = !bothLocked || scenes.length === 0;
-    allShotsBtn.title = !bothLocked ? "Lock audio and cast first" : "";
+    allShotsBtn.disabled = scenes.length === 0;
+    allShotsBtn.title = scenes.length === 0 ? "Create scenes first (MAKE SCENES)" : "";
   }
 
-  // v1.6.5: Render All also requires both locked
+  // RENDER SHOTS: Requires shots
   if (renderAllBtn) {
-    renderAllBtn.disabled = !bothLocked;
-    renderAllBtn.title = !bothLocked ? "Lock audio and cast first" : "";
+    renderAllBtn.disabled = shots.length === 0;
+    renderAllBtn.title = shots.length === 0 ? "Create shots first (MAKE SHOTS)" : "";
+  }
+
+  // RENDER VIDEO: Requires rendered shots
+  if (renderVideoBtn) {
+    renderVideoBtn.disabled = renderedShots.length === 0;
+    renderVideoBtn.title = renderedShots.length === 0 ? "Render shots first (RENDER SHOTS)" : "";
+  }
+
+  // MAKE SLIDESHOW: Requires rendered shots
+  if (exportVideoBtn) {
+    exportVideoBtn.disabled = renderedShots.length === 0;
+    exportVideoBtn.title = renderedShots.length === 0 ? "Render shots first (RENDER SHOTS)" : "";
+  }
+
+  // MAKE VIDEO: Requires video shots
+  if (exportImg2VidBtn) {
+    exportImg2VidBtn.disabled = videoShots.length === 0;
+    exportImg2VidBtn.title = videoShots.length === 0 ? "Render videos first (RENDER VIDEO)" : "";
   }
   
   // v1.6.3: Collapsible sections - manual toggle
@@ -720,6 +749,26 @@ function toggleSectionCollapse(sectionId) {
     COLLAPSED_SECTIONS.add(sectionId);
     if (section) section.classList.add("collapsed");
     if (contentElement) contentElement.style.display = "none";
+  }
+}
+
+// v1.8.8: Toggle subsection collapse (Timeline, Shots)
+function toggleSubsectionCollapse(subsectionId) {
+  const subsection = document.getElementById(subsectionId);
+  if (!subsection) return;
+  
+  const content = subsection.querySelector('.subsection-content');
+  const arrow = subsection.querySelector('.collapse-arrow');
+  const isCollapsed = subsection.classList.contains('collapsed');
+  
+  if (isCollapsed) {
+    subsection.classList.remove('collapsed');
+    if (content) content.style.display = '';
+    if (arrow) arrow.textContent = '▼';
+  } else {
+    subsection.classList.add('collapsed');
+    if (content) content.style.display = 'none';
+    if (arrow) arrow.textContent = '▶';
   }
 }
 
@@ -2163,12 +2212,12 @@ function renderTimeline(state) {
   }
   
   if (!seqs.length) {
-    container.innerHTML = '<div class="muted" style="padding:16px;text-align:center;">Click "Create Timeline" to generate scenes</div>';
+    container.innerHTML = '<div class="muted" style="padding:16px;text-align:center;">Click "MAKE SCENES" to generate timeline</div>';
     return;
   }
   
   // v1.5.4: Timeline with scene cards including edit prompt
-  container.innerHTML = `<div class="timeline-segments-v2">${seqs.map((seq, idx) => {
+  container.innerHTML = `<div class="timeline-segments-v2" onclick="deselectIfOutside(event)">${seqs.map((seq, idx) => {
     const selected = SELECTED_SEQUENCE_IDS.includes(seq.sequence_id) ? "selected" : "";
     const scene = scenes.find(s => s.sequence_id === seq.sequence_id) || scenes[idx];
     const hasScene = !!scene;
@@ -2187,8 +2236,6 @@ function renderTimeline(state) {
             : (inQueue ? `<span class="queue-num">#${queuePos + 1}</span>` : `<span>${idx + 1}</span>`)
           }
           ${hasScene && !thumb && !inQueue ? `<button class="scene-import-btn" onclick="event.stopPropagation(); importSceneImage('${scene.scene_id}')" title="Import image">📁</button>` : ''}
-          ${hasWardrobe ? `<span class="wardrobe-indicator" title="${scene.wardrobe}"><svg viewBox="0 0 512 512" width="12" height="12" fill="currentColor"><path d="M256 96c-66 0-128 32-160 80-16 24-16 56 0 80 8 12 8 28 0 40l-32 48c-8 12-8 28 0 40 16 24 48 40 80 40h224c32 0 64-16 80-40 8-12 8-28 0-40l-32-48c-8-12-8-28 0-40 16-24 16-56 0-80-32-48-94-80-160-80z"/></svg></span>` : ''}
-          ${scene?.decor_locked ? `<span class="decor-lock-indicator"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/></svg></span>` : ''}
         </div>
         <div class="timeline-seg-info">
           <div class="timeline-seg-title">${sceneTitle}</div>
@@ -2197,10 +2244,23 @@ function renderTimeline(state) {
         <div class="timeline-indicators">
           <img class="altscene-indicator ${hasAltScene ? 'active' : ''}" src="/static/couch.png" title="${hasAltScene ? 'Has alternative scene' : 'No alternative scene'}"/>
           <img class="wardrobe-indicator-new ${hasWardrobe ? 'active' : ''}" src="/static/hanger.png" title="${hasWardrobe ? scene.wardrobe : 'No wardrobe change'}"/>
+          <img class="lock-indicator ${scene?.decor_locked ? 'active' : ''}" src="/static/lock.png" title="${scene?.decor_locked ? 'Scene locked' : 'Scene unlocked'}"/>
         </div>
       </div>
     `;
   }).join("")}</div>`;
+}
+
+// v1.8.8: Deselect all sequences when clicking outside timeline segments
+function deselectIfOutside(event) {
+  if (event.target.classList.contains('timeline-segments-v2')) {
+    SELECTED_SEQUENCE_IDS = [];
+    document.querySelectorAll('.timeline-seg-v2').forEach(seg => {
+      seg.classList.remove('selected');
+    });
+    renderShots(PROJECT_STATE);
+    updateButtonStates();
+  }
 }
 
 function selectSequence(seqId, event) {
@@ -2298,7 +2358,7 @@ function showScenePopup(sceneId) {
     decor1Go.disabled = decorLocked;
   }
   if (decor1Lock) {
-    decor1Lock.textContent = decorLocked ? "🔓" : "🔒";
+    decor1Lock.classList.toggle('locked', decorLocked);
     decor1Lock.title = decorLocked ? "Unlock decor" : "Lock decor";
     decor1Lock.onclick = () => toggleSceneDecorLock(sceneId);
   }
@@ -2414,7 +2474,7 @@ function showScenePopup(sceneId) {
     wardrobeGo.disabled = wardrobeLocked;
   }
   if (wardrobeLockBtn) {
-    wardrobeLockBtn.textContent = wardrobeLocked ? "🔓" : "🔒";
+    wardrobeLockBtn.classList.toggle('locked', wardrobeLocked);
     wardrobeLockBtn.title = wardrobeLocked ? "Unlock wardrobe" : "Lock wardrobe";
     wardrobeLockBtn.onclick = () => toggleSceneWardrobeLock(sceneId);
   }
@@ -2705,16 +2765,32 @@ function renderShots(state) {
           <span>${duration}s ${energy}</span>
         </div>
         <div class="shot-card-body">
-          ${castNames 
-            ? `<div class="shot-card-cast">${castNames}</div>`
-            : `<div class="shot-card-no-cast">No cast</div>`
-          }
+          <div class="shot-cast-row">
+            ${castNames 
+              ? `<div class="shot-card-cast">${castNames}</div>`
+              : `<div class="shot-card-no-cast">No cast</div>`
+            }
+            ${hasRender ? `<button class="shot-video-btn ${sh.render?.video?.video_url && (SHOT_VIEW_MODE[sh.shot_id] || 'video') === 'video' ? 'showing-video' : ''}" onclick="event.stopPropagation(); ${sh.render?.video?.video_url ? `toggleShotView(\'${sh.shot_id}\')` : `generateShotVideoUI(\'${sh.shot_id}\')`}" title="${sh.render?.video?.video_url ? ((SHOT_VIEW_MODE[sh.shot_id] || 'video') === 'video' ? 'Show thumbnail' : 'Show video') : 'Generate video'}">Video</button>` : ''}
+          </div>
           <div class="shot-card-desc">${desc}</div>
-          <div class="shot-render-container">
+          <div class="shot-render-container" data-shot-id="${sh.shot_id}">
             ${hasRender
-              ? `<img class="shot-render-img" src="${cacheBust(getThumbnailUrl(sh.render.image_url))}" onerror="this.onerror=null; this.src='${cacheBust(sh.render.image_url)}'" onclick="showImagePopup('${sh.render.image_url}')"/>
-                 ${versionNavHtml}
-                 <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${sh.shot_id}')" title="Re-render">↻</button>`
+              ? (() => {
+                  const hasVideo = sh.render?.video?.video_url;
+                  const viewMode = SHOT_VIEW_MODE[sh.shot_id] || (hasVideo ? 'video' : 'thumb');
+                  const showingVideo = hasVideo && viewMode === 'video';
+                  
+                  if (showingVideo) {
+                    return `<div class="shot-video-wrapper" onclick="playShotVideoInline('${sh.shot_id}')">
+                      <video class="shot-render-video" src="${cacheBust(sh.render.video.video_url)}" muted></video>
+                      <div class="shot-video-play-overlay"><span class="play-icon"></span></div>
+                    </div>`;
+                  } else {
+                    return `<img class="shot-render-img" src="${cacheBust(getThumbnailUrl(sh.render.image_url))}" onerror="this.onerror=null; this.src='${cacheBust(sh.render.image_url)}'" onclick="showImagePopup('${sh.render.image_url}')"/>
+                     ${versionNavHtml}
+                     <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${sh.shot_id}')" title="Re-render">↻</button>`;
+                  }
+                })()
               : inQueue
                 ? `<div class="shot-render-placeholder queue-status">
                      <span>Queue #${queuePos + 1}</span>
@@ -2727,26 +2803,90 @@ function renderShots(state) {
             }
           </div>
           ${hasRender ? `
-          <div class="shot-edit-row">
+          <div class="shot-edit-row" data-shot-id="${sh.shot_id}" style="display: ${(!sh.render?.video?.video_url || (SHOT_VIEW_MODE[sh.shot_id] || 'video') === 'thumb') ? '' : 'none'}">
             <input type="text" class="shot-edit-input" placeholder="Edit prompt..." data-shot-id="${sh.shot_id}" onkeydown="if(event.key==='Enter'){event.preventDefault();quickEditShot('${sh.shot_id}', event.target.value);}"/>
             <button class="shot-ref-btn" onclick="openShotRefPicker('${sh.shot_id}')" title="Add reference">+</button>
             <button class="shot-edit-go" onclick="quickEditShot('${sh.shot_id}', document.querySelector('.shot-edit-input[data-shot-id=\\'${sh.shot_id}\\']').value)" title="Apply edit">→</button>
-          </div>
-          <div class="shot-video-row" >
-            ${sh.render?.video?.video_url 
-              ? `<div class="shot-video-player" onclick="playShotVideo('${sh.shot_id}', '${sh.render.video.video_url}')" title="Play video">
-                   <video class="shot-video-thumb" src="${cacheBust(sh.render.video.video_url)}" preload="metadata" muted></video>
-                   <div class="shot-video-overlay"><span class="play-icon"></span></div>
-                   <div class="shot-video-badge">${Math.round(sh.render.video.duration)}s</div>
-                 </div>`
-              : `<button class="small secondary" onclick="generateShotVideoUI('${sh.shot_id}')" >Video</button>`
-            }
           </div>
           ` : ''}
         </div>
       </div>
     `;
   }).join("");
+}
+
+// v1.8.7.1: Toggle shot view between thumb and video
+function toggleShotView(shotId) {
+  const shot = PROJECT_STATE?.storyboard?.shots?.find(s => s.shot_id === shotId);
+  if (!shot?.render?.image_url) return;
+  
+  const hasVideo = shot.render?.video?.video_url;
+  const currentMode = SHOT_VIEW_MODE[shotId] || (hasVideo ? 'video' : 'thumb');
+  const newMode = currentMode === 'thumb' ? 'video' : 'thumb';
+  SHOT_VIEW_MODE[shotId] = newMode;
+  
+  const card = document.querySelector(`.shot-card[data-shot-id="${shotId}"]`);
+  if (!card) return;
+  
+  const videoUrl = shot.render?.video?.video_url;
+  const imageUrl = shot.render.image_url;
+  
+  const container = card.querySelector('.shot-render-container');
+  const editRow = card.querySelector('.shot-edit-row');
+  const videoBtn = card.querySelector('.shot-video-btn');
+  
+  if (newMode === 'video' && videoUrl) {
+    container.innerHTML = `<div class="shot-video-wrapper" onclick="playShotVideoInline('${shotId}')">
+      <video class="shot-render-video" src="${cacheBust(videoUrl)}" muted></video>
+      <div class="shot-video-play-overlay"><span class="play-icon"></span></div>
+      <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${shotId}')" title="Re-render">↻</button>
+    </div>`;
+    if (editRow) editRow.style.display = 'none';
+    if (videoBtn) {
+      videoBtn.classList.add('showing-video');
+      videoBtn.title = 'Show thumbnail';
+    }
+  } else {
+    const editCount = shot.render?.edits?.length || 0;
+    const selectedIndex = shot.render?.selected_index ?? -1;
+    const totalVersions = editCount + 1;
+    
+    const versionNavHtml = totalVersions > 1 ? `
+      <div class="shot-version-nav">
+        <button class="shot-version-arrow" onclick="event.stopPropagation(); prevShotVersion('${shotId}')" title="Previous version"${selectedIndex <= -1 ? ' disabled' : ''}>◀</button>
+        <button class="shot-version-arrow" onclick="event.stopPropagation(); nextShotVersion('${shotId}')" title="Next version"${selectedIndex >= editCount - 1 ? ' disabled' : ''}>▶</button>
+      </div>
+    ` : '';
+    
+    container.innerHTML = `
+      <img class="shot-render-img" src="${cacheBust(getThumbnailUrl(imageUrl))}" onerror="this.onerror=null; this.src='${cacheBust(imageUrl)}'" onclick="showImagePopup('${imageUrl}')" />
+      ${versionNavHtml}
+      <button class="rerender-btn" onclick="event.stopPropagation(); renderShot('${shotId}')" title="Re-render">↻</button>
+    `;
+    if (editRow) editRow.style.display = '';
+    if (videoBtn) {
+      videoBtn.classList.remove('showing-video');
+      videoBtn.title = 'Show video';
+    }
+  }
+}
+
+// v1.8.7.2: Play video inline with overlay toggle
+function playShotVideoInline(shotId) {
+  const card = document.querySelector(`.shot-card[data-shot-id="${shotId}"]`);
+  if (!card) return;
+  
+  const wrapper = card.querySelector('.shot-video-wrapper');
+  const video = wrapper?.querySelector('.shot-render-video');
+  if (!video) return;
+  
+  if (video.paused) {
+    video.play();
+    wrapper.classList.add('playing');
+  } else {
+    video.pause();
+    wrapper.classList.remove('playing');
+  }
 }
 
 // v1.6.5: Track individual renders for stop button functionality
@@ -3302,16 +3442,6 @@ function updateSceneCardImage(sceneId, imageUrl) {
       // Force reload with timestamp to bypass cache
       thumb.innerHTML = `<img src="${imageUrl}?t=${Date.now()}"/>`;
       thumb.onclick = (e) => { e.stopPropagation(); showScenePopup(sceneId); };
-      
-      // Re-add wardrobe and lock indicators if present
-      const hasWardrobe = scene?.wardrobe?.trim();
-      const decorLocked = scene?.decor_locked;
-      if (hasWardrobe) {
-        thumb.innerHTML += `<span class="wardrobe-indicator" title="${scene.wardrobe}"><svg viewBox="0 0 512 512" width="12" height="12" fill="currentColor"><path d="M256 96c-66 0-128 32-160 80-16 24-16 56 0 80 8 12 8 28 0 40l-32 48c-8 12-8 28 0 40 16 24 48 40 80 40h224c32 0 64-16 80-40 8-12 8-28 0-40l-32-48c-8-12-8-28 0-40 16-24 16-56 0-80-32-48-94-80-160-80z"/></svg></span>`;
-      }
-      if (decorLocked) {
-        thumb.innerHTML += `<span class="decor-lock-indicator"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zM12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"/></svg></span>`;
-      }
       segment.classList.remove('in-queue');
     }
   }
@@ -3801,17 +3931,15 @@ async function exportVideo() {
     
     console.log(`[Preview] Found ${renderedShots.length} rendered shots for export`);
     
-    const resolution = document.getElementById("videoResolution").value;
+    const resolution = document.getElementById("videoResolution")?.value || "1920x1080";
     
     setStatus(`Exporting ${renderedShots.length} shots…`, null, "previewStatus");
-    document.getElementById("videoResult").innerHTML = `<span class="muted">Encoding video... This may take a few minutes.</span>`;
     
     // v1.6.3: Start polling for status updates
     let pollInterval = setInterval(async () => {
       try {
         const status = await apiCall(`/api/project/${pid()}/export/status`);
         if (status && status.status === "processing" && status.message) {
-          document.getElementById("videoResult").innerHTML = `<span class="muted">${status.message}</span>`;
           setStatus(status.message, null, "previewStatus");
         }
       } catch (e) {
@@ -3838,18 +3966,14 @@ async function exportVideo() {
         const sanitizedName = projectName.replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
         const filename = `${sanitizedName}_preview.mp4`;
         
-        document.getElementById("videoResult").innerHTML = `
-          <div style="margin-top: 12px;">
-            <video controls width="100%" style="max-width: 800px; border-radius: 8px;">
-              <source src="${result.video_url}?t=${Date.now()}" type="video/mp4">
-            </video>
-            <div style="margin-top: 8px;">
-              <button class="accent-btn" onclick="downloadVideo('${result.video_url}', '${filename}')">DOWNLOAD VIDEO</button>
-              <span class="muted" style="margin-left: 12px;">${result.shots_exported} shots, ${result.scene_transitions} scene transitions</span>
-            </div>
-          </div>
-        `;
-        setStatus("Exported", 100, "previewStatus");
+        // v1.8.9: Update preview player with video
+        const previewPlayer = document.getElementById("previewPlayer");
+        if (previewPlayer) {
+          previewPlayer.src = result.video_url + `?t=${Date.now()}`;
+          previewPlayer.load();
+        }
+        
+        setStatus(`Exported: ${result.shots_exported} shots, ${result.scene_transitions} transitions`, 100, "previewStatus");
       } else {
         throw new Error("No video URL returned");
       }
@@ -3861,18 +3985,6 @@ async function exportVideo() {
   } catch (e) {
     console.error("[Preview] Export failed:", e);
     showError(`Preview export failed: ${e.message}`);
-    
-    // Show detailed error in videoResult
-    const errorDetail = e.message.includes("500") ? 
-      "Server error during video processing. Check console for details." : 
-      e.message;
-    
-    document.getElementById("videoResult").innerHTML = `
-      <div style="color: #ef4444; padding: 12px; background: rgba(239,68,68,0.1); border-radius: 4px;">
-        <strong>Export Failed:</strong> ${errorDetail}
-        <br><small>Resolution: ${document.getElementById("videoResolution").value}</small>
-      </div>
-    `;
     setStatus("Export failed", 0, "previewStatus");
   }
 }
@@ -3919,8 +4031,10 @@ async function generateAllVideos() {
       return;
     }
     
-    const shots = PROJECT_STATE?.storyboard?.shots || [];
-    const renderedShots = shots.filter(s => s.render?.image_url);
+    const allShots = PROJECT_STATE?.storyboard?.shots || [];
+    const renderedShots = SELECTED_SEQUENCE_IDS.length > 0
+      ? allShots.filter(s => SELECTED_SEQUENCE_IDS.includes(s.sequence_id) && s.render?.image_url)
+      : allShots.filter(s => s.render?.image_url);
     
     if (renderedShots.length === 0) {
       showError("No rendered shots found. Render shots first in PREVIEW.");

@@ -350,12 +350,16 @@ body {
 
 /* v1.6.3: Collapse toggle indicator on h2 (only for collapsible sections) */
 #section-audio .card-header,
-#section-cast .card-header {
+#section-cast .card-header,
+#section-preview .card-header,
+#section-animate .card-header {
   cursor: pointer;
 }
 
 #section-audio .card-header h2::before,
-#section-cast .card-header h2::before {
+#section-cast .card-header h2::before,
+#section-preview .card-header h2::before,
+#section-animate .card-header h2::before {
   content: "▼ ";
   font-size: 10px;
   color: var(--text-dim);
@@ -363,8 +367,18 @@ body {
 }
 
 #section-audio.collapsed .card-header h2::before,
-#section-cast.collapsed .card-header h2::before {
+#section-cast.collapsed .card-header h2::before,
+#section-preview.collapsed .card-header h2::before,
+#section-animate.collapsed .card-header h2::before {
   content: "▶ ";
+}
+
+/* Video player in Preview/Animate modules */
+.module-video-player {
+  width: 100%;
+  max-height: 300px;
+  background: #000;
+  border-radius: 6px;
 }
 
 .card.collapsed:hover {
@@ -402,6 +416,22 @@ body {
   align-items: center;
   margin-bottom: 12px;
   gap: 12px;
+}
+
+.section-header .collapse-arrow {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-right: 4px;
+}
+
+.subsection-title {
+  text-transform: none;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.subsection.collapsed .subsection-content {
+  display: none;
 }
 
 .section-info {
@@ -451,9 +481,8 @@ body {
 }
 
 .subsection {
-  padding-top: 16px;
+  padding-top: 0%;
   margin-top: 16px;
-  border-top: 1px solid var(--border);
 }
 
 .disabled-section {
@@ -684,6 +713,11 @@ button.tiny {
 }
 
 /* Patch 3: Cast Matrix */
+#section-cast .module-content {
+  display: flex;
+  flex-direction: column;
+}
+
 .cast-list-rows {
   display: flex;
   flex-direction: column;
@@ -1030,7 +1064,10 @@ button.tiny {
 .add-cast-center {
   display: flex;
   justify-content: center;
-  margin-top: 12px;
+  align-items: center;
+  flex: 1;
+  min-height: 60px;
+  margin-bottom: -18px; /* Ignore card padding for true vertical center */
 }
 
 .add-cast-circle {
@@ -1368,6 +1405,15 @@ button.tiny {
   padding: 10px;
 }
 
+/* v1.8.7.1: Cast row with video button right-aligned */
+.shot-cast-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  gap: 8px;
+}
+
 /* v1.5.7: Cast names styled like filled button */
 .shot-card-cast {
   font-size: 9px;
@@ -1376,12 +1422,11 @@ button.tiny {
   background: var(--accent);
   padding: 2px 6px;
   border-radius: 3px;
-  margin-bottom: 4px;
   display: inline-block;
-  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 1;
 }
 
 .shot-card-cast .muted {
@@ -1393,7 +1438,30 @@ button.tiny {
 .shot-card-no-cast {
   font-size: 9px;
   color: var(--text-dim);
-  margin-bottom: 4px;
+}
+
+/* v1.8.7.1: Video button on cast row - greyed out / yellow states */
+.shot-video-btn {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.shot-video-btn.showing-video {
+  color: #000;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.shot-video-btn:hover {
+  border-color: var(--accent);
 }
 
 .shot-card-desc {
@@ -1452,6 +1520,50 @@ button.tiny {
   border-radius: 4px;
   cursor: pointer;
   background: var(--border);
+}
+
+/* v1.8.7.2: Shot video wrapper + player */
+.shot-video-wrapper {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  cursor: pointer;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.shot-render-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+.shot-video-play-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+  transition: opacity 0.2s;
+}
+
+.shot-video-wrapper.playing .shot-video-play-overlay {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.shot-video-play-overlay .play-icon {
+  width: 0;
+  height: 0;
+  border-left: 30px solid rgba(255, 255, 255, 0.9);
+  border-top: 18px solid transparent;
+  border-bottom: 18px solid transparent;
+  margin-left: 6px;
 }
 
 .shot-render-placeholder {
@@ -1788,7 +1900,8 @@ button.tiny {
 }
 
 .altscene-indicator,
-.wardrobe-indicator-new {
+.wardrobe-indicator-new,
+.lock-indicator {
   width: 14px;
   height: 14px;
   opacity: 0.25;
@@ -1797,6 +1910,11 @@ button.tiny {
 .altscene-indicator.active,
 .wardrobe-indicator-new.active {
   opacity: 1;
+}
+
+.lock-indicator.active {
+  opacity: 1;
+  filter: brightness(0) saturate(100%) invert(88%) sepia(55%) saturate(1449%) hue-rotate(358deg) brightness(104%) contrast(101%);
 }
 
 /* v1.6.5: Scene popup - 3 preview boxes layout */
@@ -2324,8 +2442,6 @@ button.tiny {
   border-radius: 3px;
   background: var(--bg);
   border: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 11px;
   cursor: pointer;
   flex-shrink: 0;
   display: flex;
@@ -2333,9 +2449,20 @@ button.tiny {
   justify-content: center;
 }
 
+.preview-lock-btn .lock-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0.25;
+  transition: all 0.2s;
+}
+
+.preview-lock-btn.locked .lock-icon {
+  opacity: 1;
+  filter: brightness(0) saturate(100%) invert(88%) sepia(55%) saturate(1449%) hue-rotate(358deg) brightness(104%) contrast(101%);
+}
+
 .preview-lock-btn:hover {
   border-color: var(--accent);
-  color: var(--accent);
 }
 
 /* v1.5.5: Reference picker styles */

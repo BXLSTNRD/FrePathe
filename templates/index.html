@@ -2,7 +2,7 @@
 <html><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Fré Pathé VIDEO TOOLS 1.8.7</title>
+<title>Fré Pathé VIDEO TOOLS 1.8.8</title>
 <link rel="stylesheet" href="/static/style.css"></head>
 <body>
 
@@ -14,7 +14,7 @@
   <div class="logo-wrap">
     <img src="/static/logo.png" alt="Fré Pathé" class="logo-img"/>
   </div>
-  <span class="version">v1.8.7</span>
+  <span class="version">v1.8.8</span>
 </header>
 
 <!-- PROJECT -->
@@ -200,37 +200,41 @@
 
 <!-- STORYBOARD -->
 <div class="card" id="section-storyboard">
-<h2>STORYBOARD <span id="storyboardStatus" class="module-status"></span></h2>
+<div class="card-header">
+  <h2>STORYBOARD <span id="storyboardStatus" class="module-status"></span></h2>
+  <div style="margin-left:auto;">
+    <input type="text" id="negativePromptInput" placeholder="MASTER prompt..." class="negative-prompt-input" title="MASTER prompt appended in CAPS to all shot renders"/>
+  </div>
+</div>
 
 <div class="module-content">
-  <div class="storyboard-actions">
-    <button class="accent-btn" onclick="createTimeline()" id="createTimelineBtn" disabled title="Lock audio and cast first">CREATE TIMELINE</button>
-    <button class="accent-btn" onclick="allShots()" id="allShotsBtn" disabled>ALL SHOTS</button>
+  <!-- Story Arc (shown when created) -->
+  <div id="storySummaryBox" class="story-summary-box hidden">
+    <span class="story-summary-label">STORY ARC</span>
+    <div id="storySummaryText" class="story-summary-text"></div>
   </div>
 
-  <!-- v1.5.9: Story Arc first, then Timeline -->
-  <div class="subsection">
-    <div id="storySummaryBox" class="story-summary-box hidden">
-      <span class="story-summary-label">STORY ARC</span>
-      <div id="storySummaryText" class="story-summary-text"></div>
-    </div>
-    
-    <div class="section-header">
-      <h3>Timeline</h3>
+  <!-- Timeline -->
+  <div class="subsection" id="timeline-subsection">
+    <div class="section-header collapsible" onclick="toggleSectionCollapse('section-timeline')">
+      <h3 class="subsection-title">Timeline</h3>
       <span id="timelineInfo" class="section-info"></span>
+      <div style="display:flex;gap:8px;align-items:center;margin-left:auto;" onclick="event.stopPropagation()">
+        <button class="accent-btn" onclick="createTimeline()" id="createTimelineBtn" disabled title="Lock audio and cast first">MAKE SCENES</button>
+        <button class="accent-btn" onclick="allShots()" id="allShotsBtn" disabled>MAKE SHOTS</button>
+      </div>
     </div>
     <div id="timelineContainer" class="timeline-container-full"></div>
   </div>
 
   <!-- Shots -->
-  <div class="subsection">
-    <div class="section-header">
-      <h3>Shots <span id="shotsCount" class="count-badge">0</span></h3>
-      <div style="display:flex;gap:8px;align-items:center;margin-left:auto;">
-        <button class="small" onclick="refreshFromServer()" title="Refresh from server">⟳</button>
-        <button class="accent-btn" onclick="renderAllShots()" id="renderAllShotsBtn">RENDER ALL</button>
+  <div class="subsection" id="shots-subsection">
+    <div class="section-header collapsible" onclick="toggleSectionCollapse('section-shots')">
+      <h3 class="subsection-title">Shots <span id="shotsCount" class="count-badge">0</span></h3>
+      <div style="display:flex;gap:8px;align-items:center;margin-left:auto;" onclick="event.stopPropagation()">
+        <button class="accent-btn" onclick="renderAllShots()" id="renderAllShotsBtn">RENDER SHOTS</button>
+        <button class="accent-btn" onclick="generateAllVideos()" id="generateAllVideosBtn" disabled>RENDER VIDEO</button>
         <button class="stop-btn hidden" onclick="stopRenderQueue()" id="stopRenderBtn" title="Stop rendering">STOP</button>
-        <input type="text" id="negativePromptInput" placeholder="MASTER prompt..." class="negative-prompt-input" title="MASTER prompt appended in CAPS to all shot renders"/>
       </div>
     </div>
     <div id="shotsGrid" class="shots-grid"></div>
@@ -238,75 +242,39 @@
 </div>
 </div>
 
-<!-- PREVIEW -->
-<div class="card" id="section-preview">
-<h2>PREVIEW <span id="previewStatus" class="module-status"></span></h2>
-<div class="module-content">
-  <div class="row" style="gap: 16px; align-items: flex-end;">
-    <div>
-      <label class="field-label">Resolution</label>
-      <select id="videoResolution">
-        <option value="1920x1080" selected>1080p (1920×1080)</option>
-        <option value="1280x720">720p (1280×720)</option>
-        <option value="3840x2160">4K (3840×2160)</option>
-      </select>
+<!-- PREVIEW + ANIMATE side by side -->
+<div class="two-column">
+
+  <!-- PREVIEW -->
+  <div class="card" id="section-preview">
+    <div class="card-header" onclick="toggleSectionCollapse('section-preview')">
+      <h2>PREVIEW <span id="previewStatus" class="module-status"></span></h2>
+      <div onclick="event.stopPropagation()">
+        <button onclick="exportVideo()" id="exportVideoBtn" class="accent-btn" disabled>MAKE SLIDESHOW</button>
+      </div>
     </div>
-    <button onclick="exportVideo()" id="exportVideoBtn" class="accent-btn">EXPORT PREVIEW (Stills)</button>
-    <button onclick="exportVideoImg2Vid()" id="exportImg2VidBtn" class="accent-btn" style="margin-left: 8px;">EXPORT ANIMATED</button>
-  </div>
-  <div id="videoResult" class="muted" style="margin-top: 16px;">
-    <strong>Preview (Stills):</strong> Quick export with static images<br/>
-    <strong>Animated:</strong> Full img2vid export (requires video generation first)
-  </div>
-</div>
-</div>
-
-<!-- ANIMATE -->
-<div class="card" id="section-animate">
-<h2>ANIMATE <span id="animateStatus" class="module-status"></span></h2>
-<div class="module-content">
-  <div class="info-box" style="margin-bottom: 16px;">
-    <strong>Image-to-Video Generation</strong><br/>
-    Transform rendered stills into animated video clips using AI.<br/>
-    Each shot gets motion based on camera language, energy, and environment.
-  </div>
-  
-  <div class="action-bar" style="margin-bottom: 16px;">
-    <button class="accent-btn" onclick="generateAllVideos()" id="generateAllVideosBtn">GENERATE ALL VIDEOS</button>
-    <button class="stop-btn hidden" onclick="stopVideoGeneration()" id="stopVideoGenBtn">STOP</button>
-    <span id="videoGenProgress" class="muted" style="margin-left: 12px;"></span>
-  </div>
-  
-  <div id="videoStats" class="muted" style="margin-top: 8px;">
-    Select video model in PROJECT settings first.
-  </div>
-</div>
-<div class="module-content">
-  <!-- Action Buttons -->
-  <div class="row" style="gap: 8px;">
-    <button class="accent-btn" onclick="animateAllShots()" id="animateAllBtn">
-      ANIMATE ALL SHOTS
-    </button>
-    <button class="accent-btn" onclick="animateSelectedSequence()" id="animateSequenceBtn">
-      ANIMATE SEQUENCE
-    </button>
-    <button class="stop-btn hidden" onclick="stopAnimationQueue()" id="stopAnimateBtn" title="Stop animation">
-      STOP
-    </button>
+    <div class="module-content">
+      <video id="previewPlayer" class="module-video-player" controls>
+        <source src="" type="video/mp4">
+      </video>
+    </div>
   </div>
 
-  <!-- Progress & Stats -->
-  <div id="animateStats" class="stats-row" style="margin-top: 16px; display: flex; gap: 24px; font-size: 14px;">
-    <span>Animated: <strong id="animatedCount">0</strong> / <strong id="totalShotsCount">0</strong></span>
-    <span>Queue: <strong id="animationQueueCount">0</strong></span>
-    <span>Est. Time: <strong id="animationETA">--</strong></span>
+  <!-- ANIMATE -->
+  <div class="card" id="section-animate">
+    <div class="card-header" onclick="toggleSectionCollapse('section-animate')">
+      <h2>ANIMATE <span id="animateStatus" class="module-status"></span></h2>
+      <div onclick="event.stopPropagation()">
+        <button class="accent-btn" onclick="exportVideoImg2Vid()" id="exportImg2VidBtn" disabled>MAKE VIDEO</button>
+      </div>
+    </div>
+    <div class="module-content">
+      <video id="animatePlayer" class="module-video-player" controls>
+        <source src="" type="video/mp4">
+      </video>
+    </div>
   </div>
 
-  <!-- Shot Video Grid -->
-  <div id="shotVideosGrid" class="shots-grid" style="margin-top: 16px;">
-    <!-- Dynamically populated with video thumbnails -->
-  </div>
-</div>
 </div>
 
 <!-- Popups -->
@@ -344,7 +312,9 @@
           <input type="text" id="sceneDecor1Prompt" class="shot-edit-input" placeholder="Edit prompt..."/>
           <button id="sceneDecor1RefBtn" class="shot-ref-btn" title="Add reference">+</button>
           <button id="sceneDecor1Go" class="shot-edit-go" title="Apply edit">→</button>
-          <button id="sceneDecor1Lock" class="preview-lock-btn" title="Lock decor">🔒</button>
+          <button id="sceneDecor1Lock" class="preview-lock-btn" title="Lock decor">
+            <img src="/static/lock.png" class="lock-icon"/>
+          </button>
         </div>
       </div>
 
@@ -370,7 +340,9 @@
           <input type="text" id="sceneWardrobeInput" class="shot-edit-input" placeholder="Disheveled domestic wear..."/>
           <button id="sceneWardrobeRefBtn" class="shot-ref-btn" title="Add cast ref">+</button>
           <button id="sceneWardrobeGo" class="shot-edit-go" title="Generate preview">→</button>
-          <button id="sceneWardrobeLock" class="preview-lock-btn" title="Lock wardrobe">🔒</button>
+          <button id="sceneWardrobeLock" class="preview-lock-btn" title="Lock wardrobe">
+            <img src="/static/lock.png" class="lock-icon"/>
+          </button>
         </div>
       </div>
     </div>
